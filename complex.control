@@ -1,0 +1,5 @@
+# DNA extension
+comment = 'DNA - DNA Sequence K-mer Analysis'
+default_version = '1.0'
+module_pathname = '$libdir/dna'
+relocatable = true
