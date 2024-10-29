@@ -1,0 +1,1 @@
+Select adn('ATCG');
