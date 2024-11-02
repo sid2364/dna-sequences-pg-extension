@@ -1,1 +1,0 @@
-Select adn('ATCG');
