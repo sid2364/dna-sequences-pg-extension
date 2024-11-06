@@ -183,9 +183,9 @@ dna_eq_internal(Dna *dna1, Dna *dna2){
   return strcmp(dna1->sequence, dna2->sequence) == 0;
 }
 
-PG_FUNCTION_INFO_V1(dna_eq);
+PG_FUNCTION_INFO_V1(equals);
 Datum
-dna_eq(PG_FUNCTION_ARGS)
+equals(PG_FUNCTION_ARGS)
 {
   Dna *dna1 = PG_GETARG_DNA_P(0);
   Dna *dna2 = PG_GETARG_DNA_P(1);
@@ -193,6 +193,31 @@ dna_eq(PG_FUNCTION_ARGS)
   PG_FREE_IF_COPY(dna1, 0);
   PG_FREE_IF_COPY(dna2, 1);
   PG_RETURN_BOOL(result);
+}
+
+
+
+static int
+dna_length_internal(Dna *dna)
+{
+  int length; 
+  if (dna->sequence == NULL){
+    length = 0;
+  }
+  else{
+  length = strlen(dna->sequence);
+  }
+  return length;
+}
+
+PG_FUNCTION_INFO_V1(length);
+Datum
+length(PG_FUNCTION_ARGS)
+{
+  Dna *dna = PG_GETARG_DNA_P(0);
+  int length = dna_length_internal(dna);
+  PG_FREE_IF_COPY(dna, 0);
+  PG_RETURN_INT32(length); 
 }
 
 
@@ -208,13 +233,16 @@ dna_ne(PG_FUNCTION_ARGS)
   PG_RETURN_BOOL(result);
 }
 
-
+// We'll have to remove this function
 static double
 dna_dist_internal(Dna *dna1, Dna *dna2)
 {
   double result = 1;
   return result;
 }
+
+
+
 
 PG_FUNCTION_INFO_V1(dna_dist);
 Datum

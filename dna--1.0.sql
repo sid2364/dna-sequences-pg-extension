@@ -60,10 +60,11 @@ CREATE FUNCTION dna_construct(text)
  * Operators
  ******************************************************************************/
 
-CREATE FUNCTION dna_eq(dna, dna)
+CREATE FUNCTION equals(dna, dna)
   RETURNS boolean
-  AS 'MODULE_PATHNAME', 'dna_eq'
+  AS 'MODULE_PATHNAME', 'equals'
   LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
 CREATE FUNCTION dna_ne(dna, dna)
   RETURNS boolean
   AS 'MODULE_PATHNAME', 'dna_ne'
@@ -72,7 +73,7 @@ CREATE FUNCTION dna_ne(dna, dna)
 
 CREATE OPERATOR ~= (
   LEFTARG = dna, RIGHTARG = dna,
-  PROCEDURE = dna_eq,
+  PROCEDURE = equals,
   COMMUTATOR = ~=, NEGATOR = <>
 );
 CREATE OPERATOR <> (
@@ -92,3 +93,12 @@ CREATE OPERATOR <-> (
   PROCEDURE = dna_dist,
   COMMUTATOR = <->
 );
+
+/******************************************************************************
+ * Functions
+ ******************************************************************************/
+
+ CREATE FUNCTION length(dna)
+  RETURNS int 
+  AS 'MODULE_PATHNAME', 'length'
+  LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
