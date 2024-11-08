@@ -1,13 +1,5 @@
-#include "postgres.h"
-#include <math.h>
-#include <float.h>
-#include <stdlib.h>
-
-#include "fmgr.h"
-#include "libpq/pqformat.h"
-#include "utils/fmgrprotos.h"
-
-PG_MODULE_MAGIC;
+#include "commons/commons.c"
+#include "kmer/kmer.c"
 
 typedef struct Dna
 {
@@ -48,33 +40,6 @@ static Dna * dna_make(const char *sequence)
   return dna;
 }
 
-static void p_whitespace(char **str)
-{
-  while (**str == ' ' || **str == '\n' || **str == '\r' || **str == '\t')
-    *str += 1;
-}
-
-static void ensure_end_input(char **str, bool end)
-{
-  if (end)
-  {
-    p_whitespace(str);
-    if (**str != 0)
-      ereport(ERROR, (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-        errmsg("Could not parse temporal value")));
-  }
-}
-
-static double double_parse(char **str)
-{
-  char *nextstr = *str;
-  double result = strtod(*str, &nextstr);
-  if (*str == nextstr)
-    ereport(ERROR, (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-      errmsg("Invalid input syntax for type double")));
-  *str = nextstr;
-  return result;
-}
 
 static Dna * dna_parse(char **str) {
     p_whitespace(str); 
@@ -185,7 +150,7 @@ dna_eq_internal(Dna *dna1, Dna *dna2){
 
 PG_FUNCTION_INFO_V1(equals);
 Datum
-equals(PG_FUNCTION_ARGS)
+dna_eq(PG_FUNCTION_ARGS)
 {
   Dna *dna1 = PG_GETARG_DNA_P(0);
   Dna *dna2 = PG_GETARG_DNA_P(1);
@@ -210,9 +175,9 @@ dna_length_internal(Dna *dna)
   return length;
 }
 
-PG_FUNCTION_INFO_V1(length);
+PG_FUNCTION_INFO_V1(dna_length);
 Datum
-length(PG_FUNCTION_ARGS)
+dna_length(PG_FUNCTION_ARGS)
 {
   Dna *dna = PG_GETARG_DNA_P(0);
   int length = dna_length_internal(dna);
