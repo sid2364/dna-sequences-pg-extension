@@ -9,7 +9,7 @@
 
 PG_MODULE_MAGIC;
 
-typedef struct
+typedef struct Dna
 {
   char* sequence;
 } Dna;
