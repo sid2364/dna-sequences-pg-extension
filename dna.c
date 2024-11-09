@@ -92,8 +92,10 @@ static bool validate_dna_sequence(const char *sequence) {
 }
 
 /*
-This now uses
-*/
+Creates and returns a new Dna struct by encoding the provided DNA sequence string "ATCG" into binary format (2 bits per nucleotide)
+
+It checks the input, calculates required memory, and calls encode_dna which stores the enocded sequence in bit_sequence
+ */
 static Dna * dna_make(const char *sequence)
 {
     int length = strlen(sequence);
