@@ -2,7 +2,6 @@
 
 sudo systemctl status postgresql
 
-make
 sudo make install
 
 sudo -u postgres psql -d dna -c "DROP EXTENSION IF EXISTS dna CASCADE;"

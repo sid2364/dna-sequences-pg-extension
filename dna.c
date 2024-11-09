@@ -1,13 +1,13 @@
 #include "postgres.h"
-#include <math.h>
-#include <float.h>
-#include <stdlib.h>
-#include <stdint.h>
-
 #include "utils/varlena.h"
 #include "fmgr.h"
 #include "libpq/pqformat.h"
 #include "utils/fmgrprotos.h"
+
+#include <math.h>
+#include <float.h>
+#include <stdlib.h>
+#include <stdint.h>
 
 PG_MODULE_MAGIC;
 
@@ -35,8 +35,6 @@ Calculate number of 64-bit chunks we need, since rest of the int will be padded 
  we also store the length so that we can decode it later properly without decoding extra "00"s as "A"s
 */
 static void encode_dna(const char *sequence, uint64_t *bit_sequence, int length) {
-    int bit_length = (length + 31) / 32;  // Number of 64-bit chunks we need
-
     for (int i = 0; i < length; i++) {
         int offset = (i * 2) % 64;
         int index = i / 32;
@@ -99,6 +97,11 @@ It checks the input, calculates required memory, and calls encode_dna which stor
 static Dna * dna_make(const char *sequence)
 {
     int length = strlen(sequence);
+    int bit_length = (length + 31) / 32;  // Number of 64-bit chunks we need, rest will be padded with zeros
+    int size = VARHDRSZ + sizeof(int32) + bit_length * sizeof(uint64_t);  // Total size with varlena header
+
+    // Allocate memory for Dna struct and bit_sequence, set all bits to 0 (which is why we use palloc0 and not palloc)
+    Dna *dna = (Dna *) palloc0(size);
 
     if (sequence != NULL) {
         if (!validate_dna_sequence(sequence)) {
@@ -107,12 +110,10 @@ static Dna * dna_make(const char *sequence)
         }
     }
 
-    int bit_length = (length + 31) / 32;  // Number of 64-bit chunks we need, rest will be padded with zeros
-    int size = VARHDRSZ + sizeof(int32) + bit_length * sizeof(uint64_t);  // Total size with varlena header
+    SET_VARSIZE(dna, size);
+    //dna->vl_len_ = size;  // Manually set the size in the varlena header, SET_VARSIZE is somehow not working even with the import
+    //VARATT_SIZEP(dna) = size;
 
-    // Allocate memory for Dna struct and bit_sequence
-    Dna *dna = (Dna *) palloc0(size);
-    dna->vl_len_ = size;  // Manually set the size in the varlena header, SET_VARSIZE is somehow not working even with the import
     dna->length = length;
 
     // Encode the DNA sequence directly into bit_sequence, pointer magic
@@ -121,53 +122,9 @@ static Dna * dna_make(const char *sequence)
     return dna;
 }
 
-// TODO: Check if we really need all this
-static void p_whitespace(char **str)
-{
-  while (**str == ' ' || **str == '\n' || **str == '\r' || **str == '\t')
-    *str += 1;
-}
-
-static void ensure_end_input(char **str, bool end)
-{
-  if (end)
-  {
-    p_whitespace(str);
-    if (**str != 0)
-      ereport(ERROR, (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-        errmsg("Could not parse temporal value")));
-  }
-}
-
-static double double_parse(char **str)
-{
-  char *nextstr = *str;
-  double result = strtod(*str, &nextstr);
-  if (*str == nextstr)
-    ereport(ERROR, (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-      errmsg("Invalid input syntax for type double")));
-  *str = nextstr;
-  return result;
-}
-
-static Dna * dna_parse(char **str) {
-    p_whitespace(str); 
-    char *sequence = *str; 
-    char *end = sequence;
-    while (*end && *end != ' ' && *end != '\n' && *end != '\r' && *end != '\t') {
-        end++;
-    }
-
-    *end = '\0'; 
-    Dna *result = dna_make(sequence);
-    *str = end;
-    ensure_end_input(str, true); 
-    return result;
-}
-
 static char * dna_to_str(const Dna *dna)
 {
-    if (dna->bit_sequence == NULL || dna->length == 0) {
+    if (dna->length == 0) {
         return pstrdup("");
     }
     return decode_dna(dna->bit_sequence, dna->length);
@@ -230,11 +187,12 @@ dna_send(PG_FUNCTION_ARGS)
 {
     Dna *dna = (Dna *) PG_GETARG_POINTER(0);
     StringInfoData buf;
+    int bit_length = (dna->length + 31) / 32;
+
     pq_begintypsend(&buf);
 
     pq_sendint(&buf, dna->length, sizeof(int));
 
-    int bit_length = (dna->length + 31) / 32;
     for (int i = 0; i < bit_length; i++) {
         pq_sendint64(&buf, dna->bit_sequence[i]);
     }
@@ -288,11 +246,11 @@ Magically faster than strcmp!
 */
 static bool dna_eq_internal(Dna *dna1, Dna *dna2)
 {
+    int bit_length = (dna1->length + 31) / 32;  // Number of 64-bit chunks
+
     if (dna1->length != dna2->length) {
         return false;  // Different lengths mean they can't be equal
     }
-
-    int bit_length = (dna1->length + 31) / 32;  // Number of 64-bit chunks
 
     // Compare each 64-bit chunk in the bit_sequence array
     for (int i = 0; i < bit_length; i++) {
@@ -315,11 +273,6 @@ equals(PG_FUNCTION_ARGS)
   PG_FREE_IF_COPY(dna1, 0);
   PG_FREE_IF_COPY(dna2, 1);
   PG_RETURN_BOOL(result);
-}
-
-static int dna_length_internal(Dna *dna)
-{
-    return dna->length;  // We store the length already
 }
 
 PG_FUNCTION_INFO_V1(length);
