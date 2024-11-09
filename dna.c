@@ -1,8 +1,10 @@
 #include "postgres.h"
 #include "utils/varlena.h"
+#include "varatt.h" // For SET_VARSIZE!
 #include "fmgr.h"
 #include "libpq/pqformat.h"
 #include "utils/fmgrprotos.h"
+#include <stddef.h>  // Include for offsetof
 
 #include <math.h>
 #include <float.h>
@@ -17,7 +19,7 @@ Great reference for pg functions: https://doxygen.postgresql.org/pqformat_8c.htm
 
 typedef struct Dna
 {
-    int32 vl_len_;                    // Required header for PostgreSQL variable-length types
+    char vl_len_[4];                    // Required header for PostgreSQL variable-length types
     int32 length;                     // Length of the DNA sequence in nucleotides
     uint64_t bit_sequence[FLEXIBLE_ARRAY_MEMBER];  // Array to store packed bits
 } Dna;
@@ -36,20 +38,19 @@ Calculate number of 64-bit chunks we need, since rest of the int will be padded 
 */
 static void encode_dna(const char *sequence, uint64_t *bit_sequence, int length) {
     for (int i = 0; i < length; i++) {
-        int offset = (i * 2) % 64;
-        int index = i / 32;
+        int offset = (i * 2) % 64;      // Offset for 2 bits per base
+        int index = i / 32;             // Each uint64_t holds 32 bases (64 bits)
 
         switch (sequence[i]) {
             case 'A': /* 00 */ break;
-            case 'T': bit_sequence[index] |= ((uint64_t)0x1 << offset); break; // 01
-            case 'C': bit_sequence[index] |= ((uint64_t)0x2 << offset); break; // 10
-            case 'G': bit_sequence[index] |= ((uint64_t)0x3 << offset); break; // 11
+            case 'T': bit_sequence[index] |= ((uint64_t)0x1 << offset); break; // 01 for T
+            case 'C': bit_sequence[index] |= ((uint64_t)0x2 << offset); break; // 10 for C
+            case 'G': bit_sequence[index] |= ((uint64_t)0x3 << offset); break; // 11 for G
             default:
                 ereport(ERROR, (errmsg("Invalid character in DNA sequence: %c", sequence[i])));
         }
     }
 }
-
 
 /**
 Decoding function
@@ -97,11 +98,13 @@ It checks the input, calculates required memory, and calls encode_dna which stor
 static Dna * dna_make(const char *sequence)
 {
     int length = strlen(sequence);
-    int bit_length = (length + 31) / 32;  // Number of 64-bit chunks we need, rest will be padded with zeros
-    int size = VARHDRSZ + sizeof(int32) + bit_length * sizeof(uint64_t);  // Total size with varlena header
+
+    int num_bits = length * 2;  // 2 bits per nucleotide
+    int bit_length = (num_bits + 63) / 64;  // Number of 64-bit chunks we need, rest will be padded with zeros
+    Size dna_size = offsetof(Dna, bit_sequence) + bit_length * sizeof(uint64_t);
 
     // Allocate memory for Dna struct and bit_sequence, set all bits to 0 (which is why we use palloc0 and not palloc)
-    Dna *dna = (Dna *) palloc0(size);
+    Dna *dna = (Dna *) palloc0(dna_size);
 
     if (sequence != NULL) {
         if (!validate_dna_sequence(sequence)) {
@@ -110,10 +113,8 @@ static Dna * dna_make(const char *sequence)
         }
     }
 
-    SET_VARSIZE(dna, size);
-    //dna->vl_len_ = size;  // Manually set the size in the varlena header, SET_VARSIZE is somehow not working even with the import
-    //VARATT_SIZEP(dna) = size;
-
+    SET_VARSIZE(dna, dna_size); // No need to add VARHDRSZ since the library does it for us!
+    //dna->vl_len_ = VARHDRSZ + dna_size;
     dna->length = length;
 
     // Encode the DNA sequence directly into bit_sequence, pointer magic
@@ -161,11 +162,14 @@ dna_recv(PG_FUNCTION_ARGS)
     StringInfo buf = (StringInfo) PG_GETARG_POINTER(0);
 
     int length = pq_getmsgint(buf, sizeof(int));
-    int bit_length = (length + 31) / 32;
-    int size = sizeof(Dna) + bit_length * sizeof(uint64_t);
+    int num_bits = length * 2;  // Each DNA nucleotide is 2 bits
+    int bit_length = (num_bits + 63) / 64;  // Number of 64-bit chunks needed, rounding up
 
-    Dna *dna = (Dna *) palloc0(size);
-    dna->vl_len_ = size;  // Similar to dna_make
+    Size dna_size = offsetof(Dna, bit_sequence) + bit_length * sizeof(uint64_t);
+
+    Dna *dna = (Dna *) palloc0(dna_size);
+    SET_VARSIZE(dna, dna_size);
+    //dna->vl_len_ = VARHDRSZ + dna_size;
     dna->length = length;
 
     for (int i = 0; i < bit_length; i++) {
@@ -187,19 +191,17 @@ dna_send(PG_FUNCTION_ARGS)
 {
     Dna *dna = (Dna *) PG_GETARG_POINTER(0);
     StringInfoData buf;
-    int bit_length = (dna->length + 31) / 32;
+
+    int bit_length = (dna->length * 2 + 63) / 64;
 
     pq_begintypsend(&buf);
-
     pq_sendint(&buf, dna->length, sizeof(int));
 
     for (int i = 0; i < bit_length; i++) {
         pq_sendint64(&buf, dna->bit_sequence[i]);
     }
-
     PG_RETURN_BYTEA_P(pq_endtypsend(&buf));
 }
-
 
 PG_FUNCTION_INFO_V1(dna_cast_from_text);
 Datum
@@ -246,7 +248,7 @@ Magically faster than strcmp!
 */
 static bool dna_eq_internal(Dna *dna1, Dna *dna2)
 {
-    int bit_length = (dna1->length + 31) / 32;  // Number of 64-bit chunks
+    int bit_length = (dna1->length * 2 + 63) / 64;  // Number of 64-bit chunks needed
 
     if (dna1->length != dna2->length) {
         return false;  // Different lengths mean they can't be equal
