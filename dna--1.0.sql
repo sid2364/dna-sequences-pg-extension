@@ -25,12 +25,12 @@ CREATE OR REPLACE FUNCTION dna_send(dna)
   LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
 CREATE TYPE dna (
-  internallength = 100,
+  internallength = variable,
   input          = dna_in,
   output         = dna_out,
   receive        = dna_recv,
   send           = dna_send,
-  alignment      = char
+  alignment      = int
 );
 
 CREATE OR REPLACE FUNCTION dna(text)
@@ -76,6 +76,14 @@ CREATE OPERATOR ~= (
   PROCEDURE = equals,
   COMMUTATOR = ~=, NEGATOR = <>
 );
+
+CREATE OPERATOR = (
+    LEFTARG = dna, RIGHTARG = dna,
+    PROCEDURE = equals,
+    COMMUTATOR = ~=, NEGATOR = <>
+);
+
+
 CREATE OPERATOR <> (
   LEFTARG = dna, RIGHTARG = dna,
   PROCEDURE = dna_ne,
