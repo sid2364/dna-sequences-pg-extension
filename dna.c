@@ -14,7 +14,9 @@
 PG_MODULE_MAGIC;
 
 /*
-Great reference for pg functions: https://doxygen.postgresql.org/pqformat_8c.html
+Great reference for pg functions:
+https://doxygen.postgresql.org/pqformat_8c.html
+https://www.postgresql.org/docs/9.5/xfunc-c.html
 */
 
 typedef struct Dna
