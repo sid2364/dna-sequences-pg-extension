@@ -1,11 +1,12 @@
 # Prerequisites
 *.d
 
-# Object files
+# Object files & bitcode
 *.o
 *.ko
 *.obj
 *.elf
+*.bc
 
 # Linker output
 *.ilk

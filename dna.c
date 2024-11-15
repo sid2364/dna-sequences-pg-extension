@@ -148,7 +148,7 @@ dna_eq_internal(Dna *dna1, Dna *dna2){
   return strcmp(dna1->sequence, dna2->sequence) == 0;
 }
 
-PG_FUNCTION_INFO_V1(equals);
+PG_FUNCTION_INFO_V1(dna_eq);
 Datum
 dna_eq(PG_FUNCTION_ARGS)
 {
