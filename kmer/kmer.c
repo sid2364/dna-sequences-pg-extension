@@ -14,9 +14,14 @@ static bool validate_kmer_sequence(const char *sequence) {
         ereport(ERROR, (errmsg("KMER sequence cannot be empty")));
         return false;
     }
+	const char *length_bound = sequence + 32;
     for (const char *p = sequence; *p; p++) {
+		if (p == length_bound) {
+			ereport(ERROR, (errmsg("Kmer sequence length must not exceed 32", *p)));
+			return false;
+		}
         if (*p != 'A' && *p != 'T' && *p != 'C' && *p != 'G') {
-            ereport(ERROR, (errmsg("Invalid character in KMER sequence: %c", *p)));
+            ereport(ERROR, (errmsg("Invalid character in kmer sequence: %c", *p)));
             return false;
         }
     }
