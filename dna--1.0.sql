@@ -24,6 +24,9 @@ CREATE OR REPLACE FUNCTION dna_send(dna)
   AS 'MODULE_PATHNAME'
   LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
+
+
+
 CREATE TYPE dna (
   internallength = variable,
   input          = dna_in,
@@ -90,7 +93,7 @@ CREATE OPERATOR <> (
   COMMUTATOR = <>, NEGATOR = ~=
 );
 
-
+/*
 CREATE FUNCTION dna_dist(dna, dna)
   RETURNS double precision
   AS 'MODULE_PATHNAME', 'dna_dist'
@@ -101,6 +104,7 @@ CREATE OPERATOR <-> (
   PROCEDURE = dna_dist,
   COMMUTATOR = <->
 );
+*/
 
 /******************************************************************************
  * Functions
@@ -110,3 +114,59 @@ CREATE OPERATOR <-> (
   RETURNS int 
   AS 'MODULE_PATHNAME', 'length'
   LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+
+  /******************************************************************************
+  * For Qkmer 
+ ******************************************************************************/
+
+/*
+ CREATE OR REPLACE FUNCTION qkmer_in(cstring)
+  RETURNS qkmer
+  AS 'MODULE_PATHNAME'
+  LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE OR REPLACE FUNCTION qkmer_out(qkmer)
+  RETURNS cstring
+  AS 'MODULE_PATHNAME'
+  LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE OR REPLACE FUNCTION qkmer_recv(internal)
+  RETURNS qkmer
+  AS 'MODULE_PATHNAME'
+  LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE OR REPLACE FUNCTION qkmer_send(qkmer)
+  RETURNS bytea
+  AS 'MODULE_PATHNAME'
+  LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+  CREATE TYPE qkmer (
+  internallength = variable,
+  input          = qkmer_in,
+  output         = qkmer_out,
+  receive        = qkmer_recv,
+  send           = qkmer_send,
+  alignment      = int
+);
+
+CREATE FUNCTION qkmer_construct(text)
+  RETURNS qkmer
+  AS 'MODULE_PATHNAME', 'qkmer_constructor'
+  LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+
+CREATE OR REPLACE FUNCTION qkmer(text)
+  RETURNS qkmer
+  AS 'MODULE_PATHNAME', 'qkmer_cast_from_text'
+  LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE OR REPLACE FUNCTION text(qkmer)
+  RETURNS text
+  AS 'MODULE_PATHNAME', 'qkmer_cast_to_text'
+  LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE CAST (text as qkmer) WITH FUNCTION qkmer(text) AS IMPLICIT;
+CREATE CAST (qkmer as text) WITH FUNCTION text(qkmer);
+
+*/
