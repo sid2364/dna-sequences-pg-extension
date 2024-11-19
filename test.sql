@@ -13,3 +13,20 @@ SELECT pg_column_size(dna('ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA
 -- + 4 for the int length
 -- + 4 for the varlena header VARHDRSZ
 
+-- Test creating a kmer
+SELECT kmer('ACGTA');
+
+-- Test equality function
+SELECT kmer_equals(kmer('ACGTA'), kmer('ACGTA'));  -- Should return true
+
+-- Test inequality function
+SELECT kmer_ne(kmer('ACGTA'), kmer('TGCAA'));  -- Should return true
+
+-- Test length function
+SELECT kmer_length(kmer('ACGTA'));  -- Should return 5
+
+-- Test casting kmer to text
+SELECT kmer_cast_to_text(kmer('ACGTA'));  -- Should return 'ACGTA'
+
+-- Test casting text to kmer
+SELECT kmer_cast_from_text('ACGTA'::text);  -- Should return kmer('ACGTA')

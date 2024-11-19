@@ -1,4 +1,5 @@
-comment = 'DNA extension'
+# dna.control
+comment = 'DNA and K-mer extension'
 default_version = '1.0'
 module_pathname = '$libdir/dna'
 relocatable = true
