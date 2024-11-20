@@ -119,6 +119,7 @@ CREATE OPERATOR <-> (
 * K-mers
 ******************************************************************************/
 
+/* First arg is cast from string to DNA with "dna_cast_from_text" directly */
 CREATE FUNCTION generate_kmers(dna dna, k int)
 RETURNS SETOF text
 AS 'MODULE_PATHNAME', 'generate_kmers'

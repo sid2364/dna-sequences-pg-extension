@@ -331,6 +331,7 @@ dna_dist(PG_FUNCTION_ARGS)
 This is a set returning function that generates all possible k-mers from a given DNA sequence
 
 We don't return all kmers at once, we return them one by one, this is why we use SRF_RETURN_NEXT
+Reference: https://www.postgresql.org/docs/current/xfunc-c.html#XFUNC-C-RETURN-SET
 */
 PG_FUNCTION_INFO_V1(generate_kmers);
 Datum
