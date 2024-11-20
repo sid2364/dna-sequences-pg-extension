@@ -115,10 +115,19 @@ CREATE OPERATOR <-> (
   AS 'MODULE_PATHNAME', 'length'
   LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
+/******************************************************************************
+* K-mers
+******************************************************************************/
 
-  /******************************************************************************
-  * For Qkmer 
- ******************************************************************************/
+/* First arg is cast from string to DNA with "dna_cast_from_text" directly */
+CREATE FUNCTION generate_kmers(dna dna, k int)
+RETURNS SETOF text
+AS 'MODULE_PATHNAME', 'generate_kmers'
+LANGUAGE C IMMUTABLE STRICT;
+
+/******************************************************************************
+* For Qkmer
+******************************************************************************/
 
 /*
  CREATE OR REPLACE FUNCTION qkmer_in(cstring)
