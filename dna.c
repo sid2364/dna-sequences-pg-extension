@@ -339,15 +339,15 @@ generate_kmers(PG_FUNCTION_ARGS)
     FuncCallContext *funcctx;
     MemoryContext oldcontext;
 
-    // Declare state
+    // Declare state and vars
     struct {
         Dna *dna;
         int k;
-    } *state;
-    Dna *dna;
-    int k;
-    int current_index;
-    char *kmer;
+    } *state; // We use this to store the DNA sequence and k value, seems counter-intuitive but there's no other way to store state in a SRF
+    Dna *dna; // Just used to receive the DNA sequence (it's a pointer so we don't copy the whole thing)
+    int k; // Input k value
+    int current_index; // Current kmer index we're generating, part of the state
+    char *kmer; // Even though we store kmers as binary, we return them as strings, also easier for the SPGiST index
 
     // First call initialization
     if (SRF_IS_FIRSTCALL())
@@ -377,7 +377,7 @@ generate_kmers(PG_FUNCTION_ARGS)
     // Per-call processing
     funcctx = SRF_PERCALL_SETUP();
 
-    // Get state
+    // Next, we get the state from the function context and run it as if we were in
     state = funcctx->user_fctx;
     // Current kmer index, we maintain "state" this way - the number of times we/they have called the function
     current_index = funcctx->call_cntr;
@@ -432,6 +432,7 @@ kmer_equals(PG_FUNCTION_ARGS)
     text *kmer1 = PG_GETARG_TEXT_P(0);
     text *kmer2 = PG_GETARG_TEXT_P(1);
     Oid collation = PG_GET_COLLATION(); // Get the collation which means the locale of the database, dunno why but we need it
+    // Oid is object identifier
 
     // Compare the two kmers
     result = DatumGetInt32(DirectFunctionCall2Coll(
@@ -469,3 +470,124 @@ starts_with(PG_FUNCTION_ARGS)
 
     PG_RETURN_BOOL(result);
 }
+
+/*****************************************************************************
+* Qkmer type and functions
+*****************************************************************************/
+
+/*
+Uses the output of generate_kmers to generate qkmers that match a given pattern
+
+List of IUPAC nucleotide codes we are using:
+https://en.wikipedia.org/wiki/Nucleic_acid_notation
+Symbol   Bases Represented
+A        A
+C        C
+G        G
+T        T
+U        U
+W        A, T
+S        C, G
+M        A, C
+K        G, T
+R        A, G
+Y        C, T
+B        C, G, T
+D        A, G, T
+H        A, C, T
+V        A, C, G
+N        A, C, G, T
+-        (gap)  // TODO: What to do with gaps?
+*/
+static bool nucleotide_matches(char nucleotide, char iupac) {
+    switch (iupac) {
+        case 'A': return nucleotide == 'A';
+        case 'T': return nucleotide == 'T';
+        case 'C': return nucleotide == 'C';
+        case 'G': return nucleotide == 'G';
+        case 'U': return nucleotide == 'U';  // Uracil (RNA equivalent of T)
+        case 'W': return nucleotide == 'A' || nucleotide == 'T'; // Weak: A or T
+        case 'S': return nucleotide == 'C' || nucleotide == 'G'; // Strong: C or G
+        case 'M': return nucleotide == 'A' || nucleotide == 'C'; // Amino: A or C
+        case 'K': return nucleotide == 'G' || nucleotide == 'T'; // Keto: G or T
+        case 'R': return nucleotide == 'A' || nucleotide == 'G'; // Purine: A or G
+        case 'Y': return nucleotide == 'C' || nucleotide == 'T'; // Pyrimidine: C or T
+        case 'B': return nucleotide == 'C' || nucleotide == 'G' || nucleotide == 'T'; // Not A: C, G, or T
+        case 'D': return nucleotide == 'A' || nucleotide == 'G' || nucleotide == 'T'; // Not C: A, G, or T
+        case 'H': return nucleotide == 'A' || nucleotide == 'C' || nucleotide == 'T'; // Not G: A, C, or T
+        case 'V': return nucleotide == 'A' || nucleotide == 'C' || nucleotide == 'G'; // Not T: A, C, or G
+        case 'N': return true; // Any nucleotide: A, C, G, or T, assume that these are the only valid nucleotides (which we have enforced)
+        // TODO: Handle gap!
+        default:
+            ereport(ERROR, (errmsg("Invalid character in pattern: %c!", iupac)));
+            return false;
+    }
+}
+
+/*
+Enforces that the qkmer pattern is valid and contains only IUPAC nucleotide codes
+*/
+static bool validate_qkmer_pattern(const char *pattern) {
+    if (pattern == NULL || *pattern == '\0') {
+        ereport(ERROR, (errmsg("qkmer pattern cannot be empty")));
+        return false;
+    }
+
+    for (const char *p = pattern; *p; p++) {
+        switch (*p) {
+            case 'A': case 'T': case 'C': case 'G': case 'U': case 'W': case 'S': case 'M': case 'K':
+            case 'R': case 'Y': case 'B': case 'D': case 'H': case 'V': case 'N':
+                break;
+            default:
+                ereport(ERROR, (errmsg("Invalid character in qkmer pattern: %c", *p)));
+                return false;
+        }
+    }
+
+    return true;
+}
+
+/*
+Just checks if a kmer contains a given qkmer pattern using nucleotide_matches()
+*/
+PG_FUNCTION_INFO_V1(contains);
+Datum
+contains(PG_FUNCTION_ARGS)
+{
+    // Get args
+    text *pattern_text = PG_GETARG_TEXT_P(0); // qkmer pattern
+    text *kmer_text = PG_GETARG_TEXT_P(1);    // kmer to match, iteratively generated from generate_kmers()
+    int pattern_length, kmer_length;
+
+    // Convert to C strings
+    char *pattern = text_to_cstring(pattern_text);
+    char *kmer = text_to_cstring(kmer_text);
+
+    // Validate the qkmer pattern
+    if (!validate_qkmer_pattern(pattern)) {
+        ereport(ERROR, (errmsg("Invalid qkmer pattern provided!")));
+    }
+
+    // Validate the kmer, though it should be valid since it's generated from a DNA seq, but just in case this function is called directly
+    if (!validate_dna_sequence(kmer)) {
+        ereport(ERROR, (errmsg("Invalid kmer provided!")));
+    }
+
+    pattern_length = strlen(pattern);
+    kmer_length = strlen(kmer);
+
+    // Fail if lengths do not match
+    if (pattern_length != kmer_length)
+        ereport(ERROR, (errmsg("Pattern and kmer lengths do not match")));
+
+    // Compare the pattern with the kmer using nucleotide_matches()
+    for (int i = 0; i < pattern_length; i++) {
+        if (!nucleotide_matches(kmer[i], pattern[i])) {
+            PG_RETURN_BOOL(false); // Return false if there's a mismatch
+        }
+    }
+
+    // If we get here, the kmer matches the pattern!
+    PG_RETURN_BOOL(true);
+}
+
