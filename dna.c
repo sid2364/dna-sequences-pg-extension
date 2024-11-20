@@ -518,9 +518,32 @@ static bool nucleotide_matches(char nucleotide, char iupac) {
         case 'N': return true; // Any nucleotide: A, C, G, or T, assume that these are the only valid nucleotides (which we have enforced)
         // TODO: Handle gap!
         default:
-            ereport(ERROR, (errmsg("Invalid character in pattern: %c, should never happen!", iupac)));
+            ereport(ERROR, (errmsg("Invalid character in pattern: %c!", iupac)));
             return false;
     }
+}
+
+/*
+Enforces that the qkmer pattern is valid and contains only IUPAC nucleotide codes
+*/
+static bool validate_qkmer_pattern(const char *pattern) {
+    if (pattern == NULL || *pattern == '\0') {
+        ereport(ERROR, (errmsg("qkmer pattern cannot be empty")));
+        return false;
+    }
+
+    for (const char *p = pattern; *p; p++) {
+        switch (*p) {
+            case 'A': case 'T': case 'C': case 'G': case 'U': case 'W': case 'S': case 'M': case 'K':
+            case 'R': case 'Y': case 'B': case 'D': case 'H': case 'V': case 'N':
+                break;
+            default:
+                ereport(ERROR, (errmsg("Invalid character in qkmer pattern: %c", *p)));
+                return false;
+        }
+    }
+
+    return true;
 }
 
 /*
@@ -533,13 +556,24 @@ contains(PG_FUNCTION_ARGS)
     // Get args
     text *pattern_text = PG_GETARG_TEXT_P(0); // qkmer pattern
     text *kmer_text = PG_GETARG_TEXT_P(1);    // kmer to match, iteratively generated from generate_kmers()
+    int pattern_length, kmer_length;
 
     // Convert to C strings
     char *pattern = text_to_cstring(pattern_text);
     char *kmer = text_to_cstring(kmer_text);
 
-    int pattern_length = strlen(pattern);
-    int kmer_length = strlen(kmer);
+    // Validate the qkmer pattern
+    if (!validate_qkmer_pattern(pattern)) {
+        ereport(ERROR, (errmsg("Invalid qkmer pattern provided!")));
+    }
+
+    // Validate the kmer, though it should be valid since it's generated from a DNA seq, but just in case this function is called directly
+    if (!validate_dna_sequence(kmer)) {
+        ereport(ERROR, (errmsg("Invalid kmer provided!")));
+    }
+
+    pattern_length = strlen(pattern);
+    kmer_length = strlen(kmer);
 
     // Fail if lengths do not match
     if (pattern_length != kmer_length)
