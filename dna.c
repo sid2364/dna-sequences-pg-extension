@@ -5,6 +5,8 @@
 #include "libpq/pqformat.h"
 #include "utils/fmgrprotos.h"
 #include <stddef.h>  // Include for offsetof
+#include "funcapi.h"
+#include "utils/builtins.h" // For cstring_to_text
 
 #include <math.h>
 #include <float.h>
@@ -318,4 +320,101 @@ dna_dist(PG_FUNCTION_ARGS)
   PG_FREE_IF_COPY(dna1, 0);
   PG_FREE_IF_COPY(dna2, 1);
   PG_RETURN_FLOAT8(result);
+}
+
+
+/*****************************************************************************
+* K-mer type and functions
+*****************************************************************************/
+
+/*
+This is a set returning function that generates all possible k-mers from a given DNA sequence
+
+We don't return all kmers at once, we return them one by one, this is why we use SRF_RETURN_NEXT
+*/
+PG_FUNCTION_INFO_V1(generate_kmers);
+Datum
+generate_kmers(PG_FUNCTION_ARGS)
+{
+    FuncCallContext *funcctx;
+    MemoryContext oldcontext;
+
+    // First call initialization
+    if (SRF_IS_FIRSTCALL())
+    {
+        funcctx = SRF_FIRSTCALL_INIT();
+        oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
+
+        // Extract arguments
+        Dna *dna = PG_GETARG_DNA_P(0); // We know the first argument is a DNA sequence (and not just text)
+        int k = PG_GETARG_INT32(1);
+
+        // Validate k
+        if (k <= 0 || k > 32)  // k should not exceed 32, that's usually the limit of the usefulness of k in dna sequences in practice
+            ereport(ERROR, (errmsg("Invalid k value: must be between 1 and 32")));
+
+        // Save DNA and k in funcctx
+        struct {
+            Dna *dna;
+            int k;
+        } *state = palloc(sizeof(*state));
+        state->dna = dna;
+        state->k = k;
+
+        funcctx->user_fctx = state;
+        funcctx->max_calls = dna->length - k + 1;  // Total number of kmers to generate
+
+        MemoryContextSwitchTo(oldcontext);
+    }
+
+    // Per-call processing
+    funcctx = SRF_PERCALL_SETUP();
+
+    // Our state for this set returning function, TODO: check if this is the right way to do it!
+    struct {
+        Dna *dna;
+        int k;
+    } *state = funcctx->user_fctx;
+
+    int current_index = funcctx->call_cntr;
+    // Current kmer index, we maintain "state" this way - the number of times we/they have called the function
+
+    if (current_index < funcctx->max_calls)
+    {
+        Dna *dna = state->dna;
+        int k = state->k;
+
+        // Allocate memory for the kmer we will return
+        char *kmer = palloc(k + 1);
+        kmer[k] = '\0';  // Null-terminate the kmer, since it's a string
+
+        // Decode kmer directly from the bit_sequence
+        for (int i = 0; i < k; i++)
+        {
+            int nucleotide_index = current_index + i;  // Nucleotide/character index in the DNA sequence
+            int bit_offset = (nucleotide_index * 2) % 64;  // Offset within the uint64_t
+            int chunk_index = nucleotide_index / 32;      // Where is it in the bit_sequence array
+            uint64_t bits = (dna->bit_sequence[chunk_index] >> bit_offset) & 0x3;  // AND with 0x3 to filter out just the last 2 bits
+
+            // Decode bits to string nucleotide for n00b users who can't read binary B)
+            switch (bits)
+            {
+                case 0x0: kmer[i] = 'A'; break;
+                case 0x1: kmer[i] = 'T'; break;
+                case 0x2: kmer[i] = 'C'; break;
+                case 0x3: kmer[i] = 'G'; break;
+                default:
+                    ereport(ERROR, (errmsg("Unexpected bit pattern in DNA sequence - this shouldn't ever happen!")));
+            }
+        }
+
+        // Return just this kmer
+        SRF_RETURN_NEXT(funcctx, PointerGetDatum(cstring_to_text(kmer)));
+    }
+    else
+    {
+        // Finish and cleanup
+        pfree(state);
+        SRF_RETURN_DONE(funcctx);
+    }
 }
