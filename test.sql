@@ -50,7 +50,7 @@ SELECT k.kmer, count(*) FROM generate_kmers('ATCGATCGATCGATCGACG', 5) AS k(kmer)
 --(6 rows)
 
 -- Just creating a table with some test data
-CREATE TABLE k AS SELECT kmer FROM generate_kmers('ACGTACGTACGT', 6) AS k(kmer);
+-- CREATE TABLE k AS SELECT kmer FROM generate_kmers('ACGTACGTACGT', 6) AS k(kmer);
 
 -- Counting total, distinct and unique k-mers in a table
 WITH kmers AS (

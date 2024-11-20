@@ -24,9 +24,6 @@ CREATE OR REPLACE FUNCTION dna_send(dna)
   AS 'MODULE_PATHNAME'
   LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
-
-
-
 CREATE TYPE dna (
   internallength = variable,
   input          = dna_in,
