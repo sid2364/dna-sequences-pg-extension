@@ -1,7 +1,7 @@
 EXTENSION   = dna
-MODULES 	= dna qkmer
+MODULES 	= dna
 DATA        = dna--1.0.sql dna.control
-OBJS        = qkmer.o dna.o
+OBJS        = dna.o
 
 PG_CONFIG   ?= pg_config
 PGXS        := $(shell $(PG_CONFIG) --pgxs)

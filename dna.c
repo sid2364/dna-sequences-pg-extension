@@ -5,6 +5,8 @@
 #include "libpq/pqformat.h"
 #include "utils/fmgrprotos.h"
 #include <stddef.h>  // Include for offsetof
+#include "funcapi.h"
+#include "utils/builtins.h" // For cstring_to_text
 
 #include <math.h>
 #include <float.h>
@@ -332,7 +334,7 @@ Reference: https://www.postgresql.org/docs/current/xfunc-c.html#XFUNC-C-RETURN-S
 */
 PG_FUNCTION_INFO_V1(generate_kmers);
 Datum
-generate_kmers(PG_FUNCTION_ARGS)F
+generate_kmers(PG_FUNCTION_ARGS)
 {
     FuncCallContext *funcctx;
     MemoryContext oldcontext;
