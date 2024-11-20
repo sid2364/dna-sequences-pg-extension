@@ -21,3 +21,11 @@ SELECT k.kmer FROM generate_kmers('ACGTACGT', 6) AS k(kmer) WHERE k.kmer = 'ACGT
 ----------
 -- ACGTAC
 --(1 row)
+
+SELECT k.kmer FROM generate_kmers('ACTGACGTACC', 3) AS k(kmer) WHERE k.kmer ^@ 'AC';
+-- kmer
+--------
+-- ACT
+-- ACG
+-- ACC
+--(3 rows)

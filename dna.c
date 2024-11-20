@@ -431,15 +431,41 @@ kmer_equals(PG_FUNCTION_ARGS)
     int32 result;
     text *kmer1 = PG_GETARG_TEXT_P(0);
     text *kmer2 = PG_GETARG_TEXT_P(1);
-    Oid collation = PG_GET_COLLATION(); // Get the collation which means the locale of the database
+    Oid collation = PG_GET_COLLATION(); // Get the collation which means the locale of the database, dunno why but we need it
 
     // Compare the two kmers
     result = DatumGetInt32(DirectFunctionCall2Coll(
-        texteq,        // PostgreSQL's built-in equality function for text
+        texteq,        // Built in equality function for text
         collation,      // Current collation
         PointerGetDatum(kmer1),
         PointerGetDatum(kmer2)
     ));
 
     PG_RETURN_BOOL(result == 0); // Return true if kmers are equal
+}
+
+PG_FUNCTION_INFO_V1(starts_with);
+Datum
+starts_with(PG_FUNCTION_ARGS)
+{
+    char *prefix_str, *kmer_str;
+    bool result;
+    text *prefix = PG_GETARG_TEXT_P(0);
+    text *kmer = PG_GETARG_TEXT_P(1);
+
+    int prefix_len = VARSIZE_ANY_EXHDR(prefix); // Length of prefix, excluding header
+    int kmer_len = VARSIZE_ANY_EXHDR(kmer);    // Length of kmer, excluding header
+
+    // Fail if the prefix length is greater than the kmer length
+    if (prefix_len > kmer_len)
+        ereport(ERROR, (errmsg("Prefix length cannot exceed kmer length")));
+
+    // Compare the prefix with the beginning of the kmer
+    prefix_str = VARDATA_ANY(prefix); // Pointer to prefix data
+    kmer_str = VARDATA_ANY(kmer);     // Pointer to kmer data
+
+    // Compare the first prefix_len bytes
+    result = (memcmp(prefix_str, kmer_str, prefix_len) == 0);
+
+    PG_RETURN_BOOL(result);
 }

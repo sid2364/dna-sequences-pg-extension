@@ -129,11 +129,21 @@ CREATE FUNCTION kmer_equals(text, text) RETURNS boolean
 AS 'MODULE_PATHNAME', 'kmer_equals'
 LANGUAGE C IMMUTABLE STRICT;
 
+CREATE FUNCTION starts_with(text, text) RETURNS boolean
+AS 'MODULE_PATHNAME', 'starts_with'
+LANGUAGE C IMMUTABLE STRICT;
+
 CREATE OPERATOR = (
     LEFTARG = text,
     RIGHTARG = text,
     PROCEDURE = kmer_equals
 ); /* This is different from dna equals! */
+
+CREATE OPERATOR ^@ (
+    LEFTARG = text,
+    RIGHTARG = text,
+    PROCEDURE = starts_with
+);
 
 /******************************************************************************
 * For Qkmer
