@@ -13,3 +13,11 @@ SELECT pg_column_size(dna('ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA
 -- + 4 for the int length
 -- + 4 for the varlena header VARHDRSZ
 
+SELECT generate_kmers('ATCGTAGCGT', 3); -- Should return 8 kmers / non-uniques!
+-- Above is the same as SELECT generate_kmers(dna('ATCGTAGCGT'), 3);
+
+SELECT k.kmer FROM generate_kmers('ACGTACGT', 6) AS k(kmer) WHERE k.kmer = 'ACGTAC';
+--  kmer
+----------
+-- ACGTAC
+--(1 row)
