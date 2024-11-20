@@ -339,15 +339,15 @@ generate_kmers(PG_FUNCTION_ARGS)
     FuncCallContext *funcctx;
     MemoryContext oldcontext;
 
-    // Declare state
+    // Declare state and vars
     struct {
         Dna *dna;
         int k;
-    } *state;
-    Dna *dna;
-    int k;
-    int current_index;
-    char *kmer;
+    } *state; // We use this to store the DNA sequence and k value, seems counter-intuitive but there's no other way to store state in a SRF
+    Dna *dna; // Just used to receive the DNA sequence (it's a pointer so we don't copy the whole thing)
+    int k; // Input k value
+    int current_index; // Current kmer index we're generating, part of the state
+    char *kmer; // Even though we store kmers as binary, we return them as strings, also easier for the SPGiST index
 
     // First call initialization
     if (SRF_IS_FIRSTCALL())
@@ -377,7 +377,7 @@ generate_kmers(PG_FUNCTION_ARGS)
     // Per-call processing
     funcctx = SRF_PERCALL_SETUP();
 
-    // Get state
+    // Next, we get the state from the function context and run it as if we were in
     state = funcctx->user_fctx;
     // Current kmer index, we maintain "state" this way - the number of times we/they have called the function
     current_index = funcctx->call_cntr;
@@ -432,6 +432,7 @@ kmer_equals(PG_FUNCTION_ARGS)
     text *kmer1 = PG_GETARG_TEXT_P(0);
     text *kmer2 = PG_GETARG_TEXT_P(1);
     Oid collation = PG_GET_COLLATION(); // Get the collation which means the locale of the database, dunno why but we need it
+    // Oid is object identifier
 
     // Compare the two kmers
     result = DatumGetInt32(DirectFunctionCall2Coll(
