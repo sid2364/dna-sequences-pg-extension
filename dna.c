@@ -339,6 +339,16 @@ generate_kmers(PG_FUNCTION_ARGS)
     FuncCallContext *funcctx;
     MemoryContext oldcontext;
 
+    // Declare state
+    struct {
+        Dna *dna;
+        int k;
+    } *state;
+    Dna *dna;
+    int k;
+    int current_index;
+    char *kmer;
+
     // First call initialization
     if (SRF_IS_FIRSTCALL())
     {
@@ -346,18 +356,15 @@ generate_kmers(PG_FUNCTION_ARGS)
         oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
 
         // Extract arguments
-        Dna *dna = PG_GETARG_DNA_P(0); // We know the first argument is a DNA sequence (and not just text)
-        int k = PG_GETARG_INT32(1);
+        dna = PG_GETARG_DNA_P(0); // We know the first argument is a DNA sequence (and not just text)
+        k = PG_GETARG_INT32(1);
 
         // Validate k
         if (k <= 0 || k > 32)  // k should not exceed 32, that's usually the limit of the usefulness of k in dna sequences in practice
             ereport(ERROR, (errmsg("Invalid k value: must be between 1 and 32")));
 
         // Save DNA and k in funcctx
-        struct {
-            Dna *dna;
-            int k;
-        } *state = palloc(sizeof(*state));
+        state = palloc(sizeof(*state));
         state->dna = dna;
         state->k = k;
 
@@ -370,22 +377,18 @@ generate_kmers(PG_FUNCTION_ARGS)
     // Per-call processing
     funcctx = SRF_PERCALL_SETUP();
 
-    // Our state for this set returning function, TODO: check if this is the right way to do it!
-    struct {
-        Dna *dna;
-        int k;
-    } *state = funcctx->user_fctx;
-
-    int current_index = funcctx->call_cntr;
+    // Get state
+    state = funcctx->user_fctx;
     // Current kmer index, we maintain "state" this way - the number of times we/they have called the function
+    current_index = funcctx->call_cntr;
 
     if (current_index < funcctx->max_calls)
     {
-        Dna *dna = state->dna;
-        int k = state->k;
+        dna = state->dna;
+        k = state->k;
 
         // Allocate memory for the kmer we will return
-        char *kmer = palloc(k + 1);
+        kmer = palloc(k + 1);
         kmer[k] = '\0';  // Null-terminate the kmer, since it's a string
 
         // Decode kmer directly from the bit_sequence
@@ -410,6 +413,8 @@ generate_kmers(PG_FUNCTION_ARGS)
 
         // Return just this kmer
         SRF_RETURN_NEXT(funcctx, PointerGetDatum(cstring_to_text(kmer)));
+
+        // TODO: Check whether we need to store kmers in a hash table (or something) and only return unique
     }
     else
     {

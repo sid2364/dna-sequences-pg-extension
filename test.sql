@@ -12,3 +12,5 @@ SELECT pg_column_size(dna('ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA
 -- 16 for the bit sequence of 64 bytes (2 bits per byte/nucleotide base, so 128 bits total, or 16 bytes)
 -- + 4 for the int length
 -- + 4 for the varlena header VARHDRSZ
+
+SELECT generate_kmers('ATCGTAGCGT', 3); -- Should return 8 kmers / non-uniques!
