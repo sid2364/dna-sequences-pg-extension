@@ -1,11 +1,34 @@
 SELECT equals(dna('ATCG'), dna('ATGCG'));
+-- equals
+----------
+-- f
+--(1 row)
 
 SELECT equals(dna('ATCG'), dna('ATCG'));
+-- equals
+----------
+-- t
+--(1 row)
+
 SELECT equals(dna('ATCG'), dna('GTCA'));
+--equals
+----------
+-- f
+--(1 row)
+
 
 SELECT dna_ne(dna('ATCG'), dna('ATCG'));
+-- dna_ne
+----------
+-- f
+--(1 row)
 
 SELECT length(dna('ATCG')); -- Should be 4
+-- length
+----------
+--      4
+--(1 row)
+
 SELECT pg_column_size(dna('ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG'));
 -- 64 characters/bytes, should become 24!
 -- Calculation =>
@@ -13,8 +36,25 @@ SELECT pg_column_size(dna('ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA
 -- + 4 for the int length
 -- + 4 for the varlena header VARHDRSZ
 
+-- pg_column_size
+------------------
+--             24
+
+
 SELECT generate_kmers('ATCGTAGCGT', 3); -- Should return 8 kmers / non-uniques!
 -- Above is the same as SELECT generate_kmers(dna('ATCGTAGCGT'), 3);
+-- generate_kmers
+------------------
+-- ATC
+-- TCG
+-- CGT
+-- GTA
+-- TAG
+-- AGC
+-- GCG
+-- CGT
+--(8 rows)
+
 
 SELECT k.kmer FROM generate_kmers('ACGTACGT', 6) AS k(kmer) WHERE k.kmer = 'ACGTAC';
 --  kmer
