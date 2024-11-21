@@ -200,7 +200,7 @@ CREATE OPERATOR ^@ (
 );
 
 
---For defining the hash function for the kmer type - THIS IS WHERE THE PROBLEM OCCURS
+--For defining the hash function for the kmer type
 CREATE FUNCTION kmer_hash(kmer)
     RETURNS INTEGER
     AS 'MODULE_PATHNAME', 'kmer_hash'
