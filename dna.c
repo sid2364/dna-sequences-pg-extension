@@ -7,6 +7,7 @@
 #include <stddef.h>  // Include for offsetof
 #include "funcapi.h"
 #include "utils/builtins.h" // For cstring_to_text
+#include "common/hashfn.h" // For hash_any() in kmer_hash
 
 #include <math.h>
 #include <float.h>
@@ -331,11 +332,11 @@ Store the k-mer in a single 64-bit variable, each nucleotide takes 2 bits
 Encoding 'A' as 00, 'T' as 01, 'C' as 10, and 'G' as 11
 */
 static uint64_t encode_kmer(const char *sequence, int length) {
+    uint64_t bit_sequence = 0;  // Single 64-bit variable to store the k-mer!
+
     if (length <= 0 || length > 32) { // Literally cannot store a k-mer longer than 32 nucleotides
         ereport(ERROR, (errmsg("K-mer length must be between 1 and 32 nucleotides")));
     }
-
-    uint64_t bit_sequence = 0;  // Single 64-bit variable to store the k-mer!
 
     for (int i = 0; i < length; i++) {
         int offset = i * 2;  // Each nucleotide takes 2 bits
@@ -360,13 +361,13 @@ Decoding function for K-mers
 We decode the sequence by shifting the bits to the right and then reading the last 2 bits to get the nucleotide
 */
 static char* decode_kmer(uint64_t bit_sequence, int length) {
-    if (length <= 0 || length > 32) { // Ideally, nobody should pass invalid lengths, but just in case
-        ereport(ERROR, (errmsg("K-mer length must be between 1 and 32 nucleotides")));
-    }
-
     // Allocate memory for the k-mer string (+1 for null terminator)
     char *sequence = palloc(length + 1);
     sequence[length] = '\0';
+
+    if (length <= 0 || length > 32) { // Ideally, nobody should pass invalid lengths, but just in case
+        ereport(ERROR, (errmsg("K-mer length must be between 1 and 32 nucleotides")));
+    }
 
     for (int i = 0; i < length; i++) {
         int offset = i * 2;  // Each nucleotide is 2 bits
@@ -389,12 +390,12 @@ static char* decode_kmer(uint64_t bit_sequence, int length) {
 Only difference here (from DNA) is that we also check the length of the k-mer
 */
 static bool validate_kmer_sequence(const char *sequence) {
+    int length = strlen(sequence);
+
     if (sequence == NULL || *sequence == '\0') {
         ereport(ERROR, (errmsg("K-mer sequence cannot be empty")));
         return false;
     }
-
-    int length = strlen(sequence);
 
     if (length > 32) {
         ereport(ERROR, (errmsg("K-mer length cannot exceed 32 nucleotides")));
@@ -417,30 +418,30 @@ Creates and returns a new Kmer struct by encoding the provided DNA/K-mer sequenc
 
 It checks the input, calculates required memory, and calls encode_kmer which stores the encoded sequence in bit_sequence
  */
- static Kmer *kmer_make(const char *sequence)
-   {
-       // Validate input
-       if (sequence == NULL) {
-           ereport(ERROR, (errmsg("K-mer sequence cannot be NULL")));
-           return NULL;
-       }
+static Kmer *kmer_make(const char *sequence)
+{
+   int length = strlen(sequence);
 
-       if (!validate_kmer_sequence(sequence)) {
-           ereport(ERROR, (errmsg("Invalid K-mer sequence: must contain only A, T, C, G and be at most 32 nucleotides long")));
-           return NULL;
-       }
+   // Allocate memory for Kmer struct
+   Kmer *kmer = (Kmer *) palloc0(sizeof(Kmer));
+   kmer->length = length;
 
-       int length = strlen(sequence);
-
-       // Allocate memory for Kmer struct
-       Kmer *kmer = (Kmer *) palloc0(sizeof(Kmer));
-       kmer->length = length;
-
-       // Encode the K-mer sequence into the 64-bit bit_sequence
-       kmer->bit_sequence = encode_kmer(sequence, length);
-
-       return kmer;
+   // Validate input
+   if (sequence == NULL) {
+       ereport(ERROR, (errmsg("K-mer sequence cannot be NULL")));
+       return NULL;
    }
+
+   if (!validate_kmer_sequence(sequence)) {
+       ereport(ERROR, (errmsg("Invalid K-mer sequence: must contain only A, T, C, G and be at most 32 nucleotides long")));
+       return NULL;
+   }
+
+   // Encode the K-mer sequence into the 64-bit bit_sequence
+   kmer->bit_sequence = encode_kmer(sequence, length);
+
+   return kmer;
+}
 
 /*
 String representation of a K-mer
@@ -485,13 +486,14 @@ kmer_recv(PG_FUNCTION_ARGS)
 
     // Read the length of the K-mer
     int length = pq_getmsgint(buf, sizeof(int));
-    if (length <= 0 || length > 32) {
-        ereport(ERROR, (errmsg("Invalid K-mer length: must be between 1 and 32")));
-    }
 
     // Allocate memory for the Kmer object
     Kmer *kmer = (Kmer *) palloc0(sizeof(Kmer));
     kmer->length = length;
+
+    if (length <= 0 || length > 32) {
+        ereport(ERROR, (errmsg("Invalid K-mer length: must be between 1 and 32")));
+    }
 
     // Read the encoded bit_sequence from the message buffer
     kmer->bit_sequence = pq_getmsgint64(buf);
@@ -588,9 +590,9 @@ static bool kmer_eq_internal(Kmer *kmer1, Kmer *kmer2)
     return true;  // Both lengths and sequences are equal
 }
 
-PG_FUNCTION_INFO_V1(kmer_equals);
+PG_FUNCTION_INFO_V1(kmer_eq);
 Datum
-kmer_equals(PG_FUNCTION_ARGS)
+kmer_eq(PG_FUNCTION_ARGS)
 {
     Kmer *kmer1 = (Kmer *) PG_GETARG_POINTER(0);  // Get the first Kmer object
     Kmer *kmer2 = (Kmer *) PG_GETARG_POINTER(1);  // Get the second Kmer object
@@ -616,10 +618,27 @@ kmer_ne(PG_FUNCTION_ARGS)
 {
     Kmer *kmer1 = (Kmer *) PG_GETARG_POINTER(0);  // Get the first Kmer object
     Kmer *kmer2 = (Kmer *) PG_GETARG_POINTER(1);  // Get the second Kmer object
+
     bool result = !kmer_eq_internal(kmer1, kmer2);  // Negate the result of kmer_eq_internal
+
     PG_FREE_IF_COPY(kmer1, 0);
     PG_FREE_IF_COPY(kmer2, 1);
     PG_RETURN_BOOL(result);  // Return the result
+}
+
+PG_FUNCTION_INFO_V1(kmer_hash);
+Datum
+kmer_hash(PG_FUNCTION_ARGS)
+{
+    Kmer *input = (Kmer *) PG_GETARG_POINTER(0);  // Get the Kmer input
+    const unsigned char *data;
+    uint32 hash;
+
+    // Use hash_any to hash the bit_sequence field (8 bytes)
+    data = (unsigned char *) &input->bit_sequence;
+    hash = hash_any(data, sizeof(input->bit_sequence));  // 64-bit input, 32-bit output
+
+    PG_RETURN_UINT32(hash);  // Return the hash as uint32
 }
 
 /*
@@ -644,6 +663,7 @@ generate_kmers(PG_FUNCTION_ARGS)
     int k; // Input k value
     int current_index; // Current kmer index we're generating, part of the state
     char *kmer_sequence; // Even though we store kmers as binary, we have them as strings in the intermediate stage
+    Kmer *kmer; // The Kmer object we will return
 
     // First call initialization
     if (SRF_IS_FIRSTCALL())
@@ -708,7 +728,7 @@ generate_kmers(PG_FUNCTION_ARGS)
         }
 
         // Encode the decoded k-mer as a Kmer object
-        Kmer *kmer = kmer_make(kmer_sequence);
+        kmer = kmer_make(kmer_sequence);
         pfree(kmer_sequence);  // Free the temporary k-mer string
 
         // Return just this kmer
@@ -728,12 +748,12 @@ PG_FUNCTION_INFO_V1(starts_with);
 Datum
 starts_with(PG_FUNCTION_ARGS)
 {
+    int prefix_bits;
+    uint64_t mask;
+    bool result;
+
     Kmer *kmer = (Kmer *) PG_GETARG_POINTER(0);  // Get the prefix Kmer
     Kmer *prefix = (Kmer *) PG_GETARG_POINTER(1);    // Get the target Kmer
-
-    // Decode the prefix and kmer to strings for debugging
-    char *prefix_str = decode_kmer(prefix->bit_sequence, prefix->length);
-    char *kmer_str = decode_kmer(kmer->bit_sequence, kmer->length);
 
     // Prefix length must not exceed Kmer length
     if (prefix->length > kmer->length) {
@@ -741,11 +761,11 @@ starts_with(PG_FUNCTION_ARGS)
     }
 
     // Calculate the number of bits to compare
-    int prefix_bits = prefix->length * 2;
+    prefix_bits = prefix->length * 2;
 
     // Check if the first prefix_bits match in both Kmers
-    uint64_t mask = ((uint64_t)1 << prefix_bits) - 1;  // Mask for prefix_bits
-    bool result = (prefix->bit_sequence == (kmer->bit_sequence & mask));
+    mask = ((uint64_t)1 << prefix_bits) - 1;  // Mask for prefix_bits
+    result = (prefix->bit_sequence == (kmer->bit_sequence & mask));
 
     PG_RETURN_BOOL(result);
 }
@@ -848,10 +868,10 @@ contains(PG_FUNCTION_ARGS)
     // Kmer is already valid if it's in a Kmer object, which was generated from a DNA sequence (and validated again in generate_kmers)
 
     pattern_length = strlen(pattern);
-    kmer_length = strlen(kmer);
+    kmer_length = kmer->length;
 
     // Fail if lengths do not match
-    if (pattern_length != kmer->length) {
+    if (pattern_length != kmer_length) {
         ereport(ERROR, (errmsg("Pattern and kmer lengths do not match")));
     }
 
