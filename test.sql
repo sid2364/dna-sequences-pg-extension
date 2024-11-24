@@ -89,9 +89,6 @@ SELECT k.kmer, count(*) FROM generate_kmers('ATCGATCGATCGATCGACG', 5) AS k(kmer)
 -- CGACG |     1
 --(6 rows)
 
--- Just creating a table with some test data
--- CREATE TABLE k AS SELECT kmer FROM generate_kmers('ACGTACGTACGT', 6) AS k(kmer);
-
 -- Counting total, distinct and unique k-mers in a table
 WITH kmers AS (
 SELECT k.kmer, count(*)
@@ -106,4 +103,17 @@ FROM kmers;
 ---------------+----------------+--------------
 --          10 |              5 |            1
 --(1 row)
+
+-- Just creating a table with some test data
+-- CREATE TABLE k AS SELECT kmer FROM generate_kmers('ACGTACGTACGT', 6) AS k(kmer);
+DROP TABLE IF EXISTS dna_sequences;
+CREATE TABLE dna_sequences (
+    id SERIAL PRIMARY KEY,
+    sequence dna
+);
+--
+--COPY dna_sequences(sequence)
+--FROM '/home/sid/Study/sra-data/random_nucleotides.txt'
+--WITH (FORMAT text);
+\copy dna_sequences(sequence) FROM 'random_nucleotides.txt' WITH (FORMAT text);
 
