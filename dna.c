@@ -16,12 +16,15 @@
 
 PG_MODULE_MAGIC;
 
-/*
-Great reference for pg functions:
-https://doxygen.postgresql.org/pqformat_8c.html
-https://www.postgresql.org/docs/9.5/xfunc-c.html
-*/
-
+/**
+ * DNA structure
+ *
+ * We store the DNA sequence as a bit sequence, each nucleotide takes 2 bits
+ * This is done to save space since DNA sequences can be very long (~3 billion nucleotides in the human genome)
+ *
+ * Also, we store the length of the DNA sequence in nucleotides so that we can decode it properly
+ * The vl_len_ header is required for PostgreSQL variable-length types
+ */
 typedef struct Dna
 {
     char vl_len_[4];                    // Required header for PostgreSQL variable-length types
@@ -36,11 +39,64 @@ typedef struct Dna
 #define PG_RETURN_DNA_P(x) return DnaPGetDatum(x) // ¯\_(ツ)_/¯
 
 /**
-Encoding function
+ * K-mer structure
+ *
+ * We store the K-mer as a bit sequence, each nucleotide takes 2 bits
+ * Maximum length of a K-mer is 32 nucleotides, which is 64 bits, so one single 64-bit integer is enough
+ */
+typedef struct Kmer {
+    int32 length;     // Length of the K-mer in nucleotides (each is 2 bits)
+    uint64_t bit_sequence;  // Encoded bit sequence K-mer of max length 64 bits
+    // Here, we don't need vl_len_ since the max length of a kmer is 32 nucleotides, which is 64 bits!
+} Kmer;
 
-Calculate number of 64-bit chunks we need, since rest of the int will be padded with zeros,
- we also store the length so that we can decode it later properly without decoding extra "00"s as "A"s
+#define DatumGetKmerP(X)  ((Dna *) DatumGetPointer(X)) // We convert the datum pointer into a dna pointer
+#define KmerPGetDatum(X)  PointerGetDatum(X) // We covert the dna pointer into a Datum pointer
+#define PG_GETARG_KMER_P(n) DatumGetKmerP(PG_GETARG_DATUM(n)) // We get the nth argument given to a function
+#define PG_RETURN_KMER_P(x) return KmerPGetDatum(x) // ¯\_(ツ)_/¯
+
+/**
+ * Qkmer structure
+ *
+ * We store the Qkmer as a string, each character is a nucleotide
+ * We later enforce that the Qkmer must contain valid IUPAC nucleotide codes, and is at most 32 characters long
+ * (since the maximum length of a K-mer is 32 nucleotides)
+ *
+ * The vl_len_ header is required for PostgreSQL variable-length types
+ */
+typedef struct Qkmer {
+    char vl_len_[4];    // Again, required header for PostgreSQL variable-length types
+    char sequence[FLEXIBLE_ARRAY_MEMBER]; // Flexible array for storing the sequence
+} Qkmer;
+
+// Macros for Qkmer
+#define DatumGetQkmerP(X) ((Qkmer *) DatumGetPointer(X))
+#define QkmerPGetDatum(X) PointerGetDatum(X)
+#define PG_GETARG_QKMER_P(n) DatumGetQkmerP(PG_GETARG_DATUM(n))
+#define PG_RETURN_QKMER_P(x) return QkmerPGetDatum(x)
+
+
+/**
+Great reference for pg functions:
+https://doxygen.postgresql.org/varatt_8h.html (For SET_VARSIZE)
+https://www.postgresql.org/docs/16/index.html
+
+SPGiST refs:
+https://www.postgresql.org/docs/16/indexes-types.html#INDEXES-TYPE-SPGIST
+https://www.postgresql.org/docs/current/spgist.html
+https://doxygen.postgresql.org/spgtextproc_8c_source.html
 */
+
+/********************************************************************************************
+* DNA functions
+********************************************************************************************/
+
+/**
+ * Encoding function
+ *
+ * Calculate number of 64-bit chunks we need, since rest of the int will be padded with zeros,
+ * we also store the length so that we can decode it later properly without decoding extra "00"s as "A"s
+ */
 static void encode_dna(const char *sequence, uint64_t *bit_sequence, int length) {
     for (int i = 0; i < length; i++) {
         int offset = (i * 2) % 64;      // Offset for 2 bits per base
@@ -58,10 +114,10 @@ static void encode_dna(const char *sequence, uint64_t *bit_sequence, int length)
 }
 
 /**
-Decoding function
-
-We decode the sequence by shifting the bits to the right and then reading the last 2 bits to get the nucleotide
-*/
+ * Decoding function
+ *
+ * We decode the sequence by shifting the bits to the right and then reading the last 2 bits to get the nucleotide
+ */
 static char* decode_dna(const uint64_t *bit_sequence, int length) {
     char *sequence = palloc0(length + 1);  // +1 for the null terminator which is added automatically by palloc0
 
@@ -81,6 +137,11 @@ static char* decode_dna(const uint64_t *bit_sequence, int length) {
     return sequence;
 }
 
+/**
+ * Validates the DNA sequence
+ *
+ * Checks if the sequence is not empty and contains only A, T, C, G
+ */
 static bool validate_dna_sequence(const char *sequence) {
     if (sequence == NULL || *sequence == '\0') {
         ereport(ERROR, (errmsg("DNA sequence cannot be empty")));
@@ -95,10 +156,10 @@ static bool validate_dna_sequence(const char *sequence) {
     return true;
 }
 
-/*
-Creates and returns a new Dna struct by encoding the provided DNA sequence string "ATCG" into binary format (2 bits per nucleotide)
-
-It checks the input, calculates required memory, and calls encode_dna which stores the enocded sequence in bit_sequence
+/**
+ * Creates and returns a new Dna struct by encoding the provided DNA sequence string "ATCG" into binary format (2 bits per nucleotide)
+ *
+ * It checks the input, calculates required memory, and calls encode_dna which stores the enocded sequence in bit_sequence
  */
 static Dna * dna_make(const char *sequence)
 {
@@ -128,6 +189,11 @@ static Dna * dna_make(const char *sequence)
     return dna;
 }
 
+/**
+ * Converts a Dna struct to a string
+ *
+ * We decode the bit_sequence to a string and return it
+ */
 static char * dna_to_str(const Dna *dna)
 {
     if (dna->length == 0) {
@@ -136,6 +202,9 @@ static char * dna_to_str(const Dna *dna)
     return decode_dna(dna->bit_sequence, dna->length);
 }
 
+/**
+ * General functions for DNA
+ */
 PG_FUNCTION_INFO_V1(dna_in);
 Datum
 dna_in(PG_FUNCTION_ARGS)
@@ -157,9 +226,9 @@ dna_out(PG_FUNCTION_ARGS)
 }
 
 /*
-This function is supposed to take in an existing DNA sequence and return a new DNA sequence with the same values!
-An existing sequence means it's a binary encoded sequence in String format; just Postgres things!
-*/
+ * This function is supposed to take in an existing DNA sequence and return a new DNA sequence with the same values!
+ * An existing sequence means it's a binary encoded sequence in String format; just Postgres things!
+ */
 PG_FUNCTION_INFO_V1(dna_recv);
 Datum
 dna_recv(PG_FUNCTION_ARGS)
@@ -185,11 +254,11 @@ dna_recv(PG_FUNCTION_ARGS)
 }
 
 /*
-Does the same but in reverse, takes a DNA sequence and encodes it into a binary format
-
-We can't use dna_to_str here because
-dna_to_str converts the binary data back to a string format which is not what we want here!
-*/
+ * Does the same but in reverse, takes a DNA sequence and encodes it into a binary format
+ *
+ * We can't use dna_to_str here because
+ * dna_to_str converts the binary data back to a string format which is not what we want here!
+ */
 PG_FUNCTION_INFO_V1(dna_send);
 Datum
 dna_send(PG_FUNCTION_ARGS)
@@ -229,14 +298,12 @@ dna_cast_to_text(PG_FUNCTION_ARGS)
   PG_RETURN_TEXT_P(out);
 }
 
-/*****************************************************************************/
 PG_FUNCTION_INFO_V1(dna_constructor);
 Datum
 dna_constructor(PG_FUNCTION_ARGS){
   char *sequence = PG_GETARG_CSTRING(0); 
   PG_RETURN_DNA_P(dna_make(sequence));
 }
-/*****************************************************************************/
 
 PG_FUNCTION_INFO_V1(dna_to_string);
 Datum
@@ -249,7 +316,7 @@ dna_to_string(PG_FUNCTION_ARGS)
 }
 
 /**
-Magically faster than strcmp!
+* Magically faster than strcmp!
 */
 static bool dna_eq_internal(Dna *dna1, Dna *dna2)
 {
@@ -268,7 +335,6 @@ static bool dna_eq_internal(Dna *dna1, Dna *dna2)
 
     return true;  // All chunks are equal, phew!
 }
-
 
 PG_FUNCTION_INFO_V1(equals);
 Datum
@@ -304,32 +370,16 @@ dna_ne(PG_FUNCTION_ARGS)
     PG_RETURN_BOOL(result);
 }
 
-/*****************************************************************************
-* K-mer type
-*****************************************************************************/
 
-typedef struct Kmer {
-    int32 length;     // Length of the K-mer in nucleotides (each is 2 bits)
-    uint64_t bit_sequence;  // Encoded bit sequence K-mer of max length 64 bits
-    // Here, we don't need vl_len_ since the max length of a kmer is 32 nucleotides, which is 64 bits!
-} Kmer;
-
-
-/********************************************************************************
-* K-mer functions
-********************************************************************************/
-
-// In simple words, datum is like void * with additional size header and here we define macros.
-#define DatumGetKmerP(X)  ((Dna *) DatumGetPointer(X)) // We convert the datum pointer into a dna pointer
-#define KmerPGetDatum(X)  PointerGetDatum(X) // We covert the dna pointer into a Datum pointer
-#define PG_GETARG_KMER_P(n) DatumGetKmerP(PG_GETARG_DATUM(n)) // We get the nth argument given to a function
-#define PG_RETURN_KMER_P(x) return KmerPGetDatum(x) // ¯\_(ツ)_/¯
+/********************************************************************************************
+* Kmer functions
+********************************************************************************************/
 
 /**
-Encoding function for K-mers
-
-Store the k-mer in a single 64-bit variable, each nucleotide takes 2 bits
-Encoding 'A' as 00, 'T' as 01, 'C' as 10, and 'G' as 11
+ * Encoding function for K-mers
+ *
+ * Store the k-mer in a single 64-bit variable, each nucleotide takes 2 bits
+ * Encoding 'A' as 00, 'T' as 01, 'C' as 10, and 'G' as 11
 */
 static uint64_t encode_kmer(const char *sequence, int length) {
     uint64_t bit_sequence = 0;  // Single 64-bit variable to store the k-mer!
@@ -356,10 +406,10 @@ static uint64_t encode_kmer(const char *sequence, int length) {
 
 
 /*
-Decoding function for K-mers
-
-We decode the sequence by shifting the bits to the right and then reading the last 2 bits to get the nucleotide
-*/
+ * Decoding function for K-mers
+ *
+ * We decode the sequence by shifting the bits to the right and then reading the last 2 bits to get the nucleotide
+ */
 static char* decode_kmer(uint64_t bit_sequence, int length) {
     // Allocate memory for the k-mer string (+1 for null terminator)
     char *sequence = palloc(length + 1);
@@ -387,8 +437,8 @@ static char* decode_kmer(uint64_t bit_sequence, int length) {
 }
 
 /*
-Only difference here (from DNA) is that we also check the length of the k-mer
-*/
+ * Only difference here (from DNA) is that we also check the length of the k-mer
+ */
 static bool validate_kmer_sequence(const char *sequence) {
     int length = strlen(sequence);
 
@@ -414,9 +464,9 @@ static bool validate_kmer_sequence(const char *sequence) {
 
 
 /*
-Creates and returns a new Kmer struct by encoding the provided DNA/K-mer sequence string "ATCG" into binary format (2 bits per nucleotide)
-
-It checks the input, calculates required memory, and calls encode_kmer which stores the encoded sequence in bit_sequence
+ * Creates and returns a new Kmer struct by encoding the provided DNA/K-mer sequence string "ATCG" into binary format (2 bits per nucleotide)
+ *
+ * It checks the input, calculates required memory, and calls encode_kmer which stores the encoded sequence in bit_sequence
  */
 static Kmer *kmer_make(const char *sequence)
 {
@@ -444,8 +494,8 @@ static Kmer *kmer_make(const char *sequence)
 }
 
 /*
-String representation of a K-mer
-*/
+ * String representation of a K-mer
+ */
 static char *kmer_to_str(const Kmer *kmer)
 {
     if (kmer->length == 0) {
@@ -475,9 +525,9 @@ kmer_out(PG_FUNCTION_ARGS)
 }
 
 /*
-This function is supposed to take in an existing K-mer sequence and return a new K-mer sequence with the same values!
-An existing sequence means it's a binary encoded sequence in String format; just Postgres things!
-*/
+ * This function is supposed to take in an existing K-mer sequence and return a new K-mer sequence with the same values!
+ * An existing sequence means it's a binary encoded sequence in String format; just Postgres things!
+ */
 PG_FUNCTION_INFO_V1(kmer_recv);
 Datum
 kmer_recv(PG_FUNCTION_ARGS)
@@ -502,11 +552,11 @@ kmer_recv(PG_FUNCTION_ARGS)
 }
 
 /*
-Does the same but in reverse, takes a DNA/K-mer sequence and encodes it into a binary format
-
-We can't use kmer_to_str here because
-kmer_to_str converts the binary data back to a string format which is not what we want here!
-*/
+ * Does the same but in reverse, takes a DNA/K-mer sequence and encodes it into a binary format
+ *
+ * We can't use kmer_to_str here because
+ * kmer_to_str converts the binary data back to a string format which is not what we want here!
+ */
 PG_FUNCTION_INFO_V1(kmer_send);
 Datum
 kmer_send(PG_FUNCTION_ARGS)
@@ -526,8 +576,8 @@ kmer_send(PG_FUNCTION_ARGS)
 }
 
 /*
-Convert a text object to a Kmer object
-*/
+ * Convert a text object to a Kmer object
+ */
 PG_FUNCTION_INFO_V1(kmer_cast_from_text);
 Datum
 kmer_cast_from_text(PG_FUNCTION_ARGS)
@@ -539,8 +589,8 @@ kmer_cast_from_text(PG_FUNCTION_ARGS)
 }
 
 /*
-Convert a Kmer object to a text object
-*/
+ * Convert a Kmer object to a text object
+ */
 PG_FUNCTION_INFO_V1(kmer_cast_to_text);
 Datum
 kmer_cast_to_text(PG_FUNCTION_ARGS)
@@ -553,10 +603,10 @@ kmer_cast_to_text(PG_FUNCTION_ARGS)
 }
 
 /*
-Get the input C string and create a Kmer object
-
-These are somehow required by Postgres to create a new Kmer object
-*/
+ * Get the input C string and create a Kmer object
+ *
+ * These are somehow required by Postgres to create a new Kmer object
+ */
 PG_FUNCTION_INFO_V1(kmer_constructor);
 Datum
 kmer_constructor(PG_FUNCTION_ARGS)
@@ -564,7 +614,7 @@ kmer_constructor(PG_FUNCTION_ARGS)
     char *sequence = PG_GETARG_CSTRING(0);
     PG_RETURN_POINTER(kmer_make(sequence));
 }
-/*****************************************************************************/
+
 PG_FUNCTION_INFO_V1(kmer_to_string);
 Datum
 kmer_to_string(PG_FUNCTION_ARGS)
@@ -575,6 +625,11 @@ kmer_to_string(PG_FUNCTION_ARGS)
     PG_RETURN_CSTRING(result);  // Return the decoded string
 }
 
+/**
+ * Compare two Kmers for equality
+ *
+ * We compare the lengths and the bit sequences
+ */
 static bool kmer_eq_internal(Kmer *kmer1, Kmer *kmer2)
 {
     // Check if lengths are different
@@ -582,7 +637,7 @@ static bool kmer_eq_internal(Kmer *kmer1, Kmer *kmer2)
         return false;
     }
 
-    // Now compare
+    // Now compare the bit sequences
     if (kmer1->bit_sequence != kmer2->bit_sequence) {
         return false;  // Sequences are different
     }
@@ -642,11 +697,11 @@ kmer_hash(PG_FUNCTION_ARGS)
 }
 
 /*
-This is a set returning function that generates all possible k-mers from a given DNA sequence
-
-We don't return all kmers at once, we return them one by one, this is why we use SRF_RETURN_NEXT
-Reference: https://www.postgresql.org/docs/current/xfunc-c.html#XFUNC-C-RETURN-SET
-*/
+ * This is a set returning function that generates all possible k-mers from a given DNA sequence
+ *
+ * We don't return all kmers at once, we return them one by one, this is why we use SRF_RETURN_NEXT
+ * Reference: https://www.postgresql.org/docs/current/xfunc-c.html#XFUNC-C-RETURN-SET
+ */
 PG_FUNCTION_INFO_V1(generate_kmers);
 Datum
 generate_kmers(PG_FUNCTION_ARGS)
@@ -742,8 +797,8 @@ generate_kmers(PG_FUNCTION_ARGS)
     }
 }
 /*
-Basically just checks if the prefix is the same as the first n nucleotides of the kmer
-*/
+ * Basically just checks if the prefix is the same as the first n nucleotides of the kmer
+ */
 PG_FUNCTION_INFO_V1(starts_with);
 Datum
 starts_with(PG_FUNCTION_ARGS)
@@ -770,24 +825,14 @@ starts_with(PG_FUNCTION_ARGS)
     PG_RETURN_BOOL(result);
 }
 
-/*****************************************************************************
-* Qkmer type and functions
-*****************************************************************************/
-
-typedef struct Qkmer {
-    char vl_len_[4];    // Again, required header for PostgreSQL variable-length types
-    char sequence[FLEXIBLE_ARRAY_MEMBER]; // Flexible array for storing the sequence
-} Qkmer;
-
-// Macros for Qkmer
-#define DatumGetQkmerP(X) ((Qkmer *) DatumGetPointer(X))
-#define QkmerPGetDatum(X) PointerGetDatum(X)
-#define PG_GETARG_QKMER_P(n) DatumGetQkmerP(PG_GETARG_DATUM(n))
-#define PG_RETURN_QKMER_P(x) return QkmerPGetDatum(x)
+/********************************************************************************************
+* Qkmer functions
+********************************************************************************************/
 
 /*
-Enforces that the qkmer pattern is valid and contains only IUPAC nucleotide codes
-*/
+ * Enforces that the qkmer pattern is valid and contains only IUPAC nucleotide codes
+ * Also, the pattern must not be empty and must not exceed 32 characters
+ */
 static bool validate_qkmer_pattern(const char *pattern) {
     if (pattern == NULL || *pattern == '\0') {
         ereport(ERROR, (errmsg("qkmer pattern cannot be empty")));
@@ -814,13 +859,19 @@ static bool validate_qkmer_pattern(const char *pattern) {
     return true;
 }
 
+/**
+ * Encoding function for Q-kmers
+ *
+ * Store the q-kmer in a char array, each nucleotide takes 1 byte
+ * There's also potential to use shorter header with SET_VARSIZE_SHORT, but it's harder to work with somehow
+ */
 static Qkmer *qkmer_make(const char *sequence)
 {
     int length = strlen(sequence);
     Size qkmer_size;
     Qkmer *qkmer;
 
-    // Validate sequence characters (must follow IUPAC nucleotide codes)
+    // Validate sequence characters
     if (!validate_qkmer_pattern(sequence)) {
         ereport(ERROR, (errmsg("Invalid Qkmer sequence: must contain valid IUPAC nucleotide codes")));
         return NULL;
@@ -833,7 +884,7 @@ static Qkmer *qkmer_make(const char *sequence)
 
     // Copy the sequence
     strncpy(qkmer->sequence, sequence, length);
-    qkmer->sequence[length] = '\0'; // Null-terminate the sequence
+    qkmer->sequence[length] = '\0'; // Null-terminate the char sequence
 
     return qkmer;
 }
@@ -892,7 +943,7 @@ qkmer_recv(PG_FUNCTION_ARGS)
 
     // Use qkmer_make to create the Qkmer
     qkmer = qkmer_make(sequence);
-    pfree(sequence); // Free the temp buffer
+    pfree(sequence); // Free the temp buffer!
 
     PG_RETURN_QKMER_P(qkmer);
 }
@@ -921,28 +972,27 @@ qkmer_send(PG_FUNCTION_ARGS)
 }
 
 /*
-Uses the output of generate_kmers to generate qkmers that match a given pattern
-
-List of IUPAC nucleotide codes we are using:
-https://en.wikipedia.org/wiki/Nucleic_acid_notation
-Symbol   Bases Represented
-A        A
-C        C
-G        G
-T        T
-U        U
-W        A, T
-S        C, G
-M        A, C
-K        G, T
-R        A, G
-Y        C, T
-B        C, G, T
-D        A, G, T
-H        A, C, T
-V        A, C, G
-N        A, C, G, T
--        (gap)  // We don't use this
+* Uses the output of generate_kmers to generate qkmers that match a given pattern
+*
+* List of IUPAC nucleotide codes we are using:
+* https://en.wikipedia.org/wiki/Nucleic_acid_notation
+* Symbol   Bases Represented
+* A        A
+* C        C
+* G        G
+* T        T
+* U        U
+* W        A, T
+* S        C, G
+* M        A, C
+* K        G, T
+* R        A, G
+* Y        C, T
+* B        C, G, T
+* D        A, G, T
+* H        A, C, T
+* V        A, C, G
+* N        A, C, G, T
 */
 static bool nucleotide_matches(char nucleotide, char iupac) {
     switch (iupac) {
@@ -969,8 +1019,8 @@ static bool nucleotide_matches(char nucleotide, char iupac) {
 }
 
 /*
-Just checks if a kmer contains a given qkmer pattern using nucleotide_matches()
-*/
+ * Just checks if a kmer contains a given qkmer pattern using nucleotide_matches()
+ */
 PG_FUNCTION_INFO_V1(contains);
 Datum
 contains(PG_FUNCTION_ARGS)
