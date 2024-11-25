@@ -252,7 +252,6 @@ CREATE OPERATOR = (
 );
 
 --For Qkmer pattern search
-
 CREATE FUNCTION contains(qkmer, kmer) RETURNS boolean
 AS 'MODULE_PATHNAME', 'contains'
 LANGUAGE C IMMUTABLE STRICT;

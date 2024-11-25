@@ -71,8 +71,15 @@ SELECT k.kmer FROM generate_kmers('ACTGACGTACC', 3) AS k(kmer) WHERE k.kmer ^@ '
 --(3 rows)
 
 SELECT qkmer('ATCGUWSMKRYBDHVN');
+--------------------
+-- ATCGUWSMKRYBDHVN
+--(1 row)
 
 SELECT equals(qkmer('KRYBDHVN'), qkmer('KRYBDHVN'));
+-- equals
+----------
+-- t
+--(1 row)
 
 SELECT k.kmer FROM generate_kmers('ACGTACGCACGT', 6) AS k(kmer) WHERE 'DNMSRN' @> k.kmer ;
 --  kmer
