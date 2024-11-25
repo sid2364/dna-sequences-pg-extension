@@ -70,6 +70,10 @@ SELECT k.kmer FROM generate_kmers('ACTGACGTACC', 3) AS k(kmer) WHERE k.kmer ^@ '
 -- ACC
 --(3 rows)
 
+SELECT qkmer('ATCGUWSMKRYBDHVN');
+
+SELECT equals(qkmer('KRYBDHVN'), qkmer('KRYBDHVN'));
+
 SELECT k.kmer FROM generate_kmers('ACGTACGCACGT', 6) AS k(kmer) WHERE 'DNMSRN' @> k.kmer ;
 --  kmer
 ----------
@@ -115,5 +119,5 @@ CREATE TABLE dna_sequences (
 --COPY dna_sequences(sequence)
 --FROM '/home/sid/Study/sra-data/random_nucleotides.txt'
 --WITH (FORMAT text);
-\copy dna_sequences(sequence) FROM 'random_nucleotides.txt' WITH (FORMAT text);
+--\copy dna_sequences(sequence) FROM 'random_nucleotides.txt' WITH (FORMAT text);
 

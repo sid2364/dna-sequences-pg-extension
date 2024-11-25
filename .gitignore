@@ -54,3 +54,5 @@ dkms.conf
 # Local files
 #start_db_make_extension.sh
 .idea
+
+random_nucleotides.txt

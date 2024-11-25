@@ -211,14 +211,54 @@ DEFAULT FOR TYPE kmer USING HASH AS
     OPERATOR 1 = (kmer, kmer),
     FUNCTION 1 kmer_hash(kmer);
 
+-- Qkmer type
+CREATE FUNCTION qkmer_in(cstring) RETURNS qkmer
+    AS 'MODULE_PATHNAME', 'qkmer_in'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION qkmer_out(qkmer) RETURNS cstring
+    AS 'MODULE_PATHNAME', 'qkmer_out'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION qkmer_recv(internal) RETURNS qkmer
+    AS 'MODULE_PATHNAME', 'qkmer_recv'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION qkmer_send(qkmer) RETURNS bytea
+    AS 'MODULE_PATHNAME', 'qkmer_send'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE TYPE qkmer (
+    INTERNALLENGTH = variable,
+    INPUT = qkmer_in,
+    OUTPUT = qkmer_out,
+    RECEIVE = qkmer_recv,
+    SEND = qkmer_send,
+    ALIGNMENT = int
+);
+
+CREATE FUNCTION length(qkmer) RETURNS int
+    AS 'MODULE_PATHNAME', 'qkmer_length'
+    LANGUAGE C IMMUTABLE STRICT;
+
+CREATE FUNCTION equals(qkmer, qkmer) RETURNS boolean
+    AS 'MODULE_PATHNAME', 'qkmer_eq'
+     LANGUAGE C IMMUTABLE STRICT;
+
+CREATE OPERATOR = (
+    LEFTARG = qkmer,
+    RIGHTARG = qkmer,
+    PROCEDURE = equals
+);
+
 --For Qkmer pattern search
 
-CREATE FUNCTION contains(text, kmer) RETURNS boolean
+CREATE FUNCTION contains(qkmer, kmer) RETURNS boolean
 AS 'MODULE_PATHNAME', 'contains'
 LANGUAGE C IMMUTABLE STRICT;
 
 CREATE OPERATOR @> (
-    LEFTARG = text,
+    LEFTARG = qkmer,
     RIGHTARG = kmer,
     PROCEDURE = contains
 );

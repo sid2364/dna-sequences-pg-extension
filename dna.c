@@ -774,6 +774,152 @@ starts_with(PG_FUNCTION_ARGS)
 * Qkmer type and functions
 *****************************************************************************/
 
+typedef struct Qkmer {
+    char vl_len_[4];    // Again, required header for PostgreSQL variable-length types
+    char sequence[FLEXIBLE_ARRAY_MEMBER]; // Flexible array for storing the sequence
+} Qkmer;
+
+// Macros for Qkmer
+#define DatumGetQkmerP(X) ((Qkmer *) DatumGetPointer(X))
+#define QkmerPGetDatum(X) PointerGetDatum(X)
+#define PG_GETARG_QKMER_P(n) DatumGetQkmerP(PG_GETARG_DATUM(n))
+#define PG_RETURN_QKMER_P(x) return QkmerPGetDatum(x)
+
+/*
+Enforces that the qkmer pattern is valid and contains only IUPAC nucleotide codes
+*/
+static bool validate_qkmer_pattern(const char *pattern) {
+    if (pattern == NULL || *pattern == '\0') {
+        ereport(ERROR, (errmsg("qkmer pattern cannot be empty")));
+        return false;
+    }
+
+    // Check length
+    if (strlen(pattern) > 32) {
+        ereport(ERROR, (errmsg("Qkmer pattern length cannot exceed 32 characters")));
+        return false;
+    }
+
+    for (const char *p = pattern; *p; p++) {
+        switch (*p) {
+            case 'A': case 'T': case 'C': case 'G': case 'U': case 'W': case 'S': case 'M': case 'K':
+            case 'R': case 'Y': case 'B': case 'D': case 'H': case 'V': case 'N':
+                break;
+            default:
+                ereport(ERROR, (errmsg("Invalid character in qkmer pattern: %c", *p)));
+                return false;
+        }
+    }
+
+    return true;
+}
+
+static Qkmer *qkmer_make(const char *sequence)
+{
+    int length = strlen(sequence);
+    Size qkmer_size;
+    Qkmer *qkmer;
+
+    // Validate sequence characters (must follow IUPAC nucleotide codes)
+    if (!validate_qkmer_pattern(sequence)) {
+        ereport(ERROR, (errmsg("Invalid Qkmer sequence: must contain valid IUPAC nucleotide codes")));
+        return NULL;
+    }
+
+    qkmer_size = offsetof(Qkmer, sequence) + length + 1;  // +1 for null terminator
+    qkmer = (Qkmer *) palloc0(qkmer_size);
+
+    SET_VARSIZE(qkmer, qkmer_size);
+
+    // Copy the sequence
+    strncpy(qkmer->sequence, sequence, length);
+    qkmer->sequence[length] = '\0'; // Null-terminate the sequence
+
+    return qkmer;
+}
+
+PG_FUNCTION_INFO_V1(qkmer_in);
+Datum
+qkmer_in(PG_FUNCTION_ARGS)
+{
+    char *str = PG_GETARG_CSTRING(0);
+    Qkmer *qkmer = qkmer_make(str);
+    PG_RETURN_QKMER_P(qkmer);
+}
+
+PG_FUNCTION_INFO_V1(qkmer_out);
+Datum
+qkmer_out(PG_FUNCTION_ARGS)
+{
+    Qkmer *qkmer = PG_GETARG_QKMER_P(0);
+    char *result = pstrdup(qkmer->sequence); // Duplicate the string for output
+    PG_RETURN_CSTRING(result);
+}
+
+PG_FUNCTION_INFO_V1(qkmer_length);
+Datum
+qkmer_length(PG_FUNCTION_ARGS)
+{
+    Qkmer *qkmer = PG_GETARG_QKMER_P(0);
+    int length = strlen(qkmer->sequence); // Compute length
+    PG_RETURN_INT32(length);
+}
+
+PG_FUNCTION_INFO_V1(qkmer_eq);
+Datum
+qkmer_eq(PG_FUNCTION_ARGS)
+{
+    Qkmer *qkmer1 = PG_GETARG_QKMER_P(0);
+    Qkmer *qkmer2 = PG_GETARG_QKMER_P(1);
+    bool result = strcmp(qkmer1->sequence, qkmer2->sequence) == 0;
+    PG_RETURN_BOOL(result);
+}
+
+PG_FUNCTION_INFO_V1(qkmer_recv);
+Datum
+qkmer_recv(PG_FUNCTION_ARGS)
+{
+    Qkmer *qkmer;
+    StringInfo buf = (StringInfo) PG_GETARG_POINTER(0);
+
+    // Read the length of the sequence
+    int length = pq_getmsgint(buf, sizeof(int));
+
+    // Allocate a temporary buffer for the sequence
+    char *sequence = (char *) palloc(length + 1);
+    pq_copymsgbytes(buf, sequence, length);
+    sequence[length] = '\0'; // Null-terminate
+
+    // Use qkmer_make to create the Qkmer
+    qkmer = qkmer_make(sequence);
+    pfree(sequence); // Free the temp buffer
+
+    PG_RETURN_QKMER_P(qkmer);
+}
+
+PG_FUNCTION_INFO_V1(qkmer_send);
+Datum
+qkmer_send(PG_FUNCTION_ARGS)
+{
+    Qkmer *qkmer = PG_GETARG_QKMER_P(0);
+    StringInfoData buf;
+
+    // Get the length of the Qkmer sequence
+    int length = strlen(qkmer->sequence);
+
+    // Start constructing the binary representation
+    pq_begintypsend(&buf);
+
+    // Write the length of the sequence as a 4-byte integer
+    pq_sendint(&buf, length, sizeof(int));
+
+    // Write the sequence as raw bytes (excluding the null terminator)
+    pq_sendbytes(&buf, qkmer->sequence, length);
+
+    // Return the serialized bytea
+    PG_RETURN_BYTEA_P(pq_endtypsend(&buf));
+}
+
 /*
 Uses the output of generate_kmers to generate qkmers that match a given pattern
 
@@ -823,29 +969,6 @@ static bool nucleotide_matches(char nucleotide, char iupac) {
 }
 
 /*
-Enforces that the qkmer pattern is valid and contains only IUPAC nucleotide codes
-*/
-static bool validate_qkmer_pattern(const char *pattern) {
-    if (pattern == NULL || *pattern == '\0') {
-        ereport(ERROR, (errmsg("qkmer pattern cannot be empty")));
-        return false;
-    }
-
-    for (const char *p = pattern; *p; p++) {
-        switch (*p) {
-            case 'A': case 'T': case 'C': case 'G': case 'U': case 'W': case 'S': case 'M': case 'K':
-            case 'R': case 'Y': case 'B': case 'D': case 'H': case 'V': case 'N':
-                break;
-            default:
-                ereport(ERROR, (errmsg("Invalid character in qkmer pattern: %c", *p)));
-                return false;
-        }
-    }
-
-    return true;
-}
-
-/*
 Just checks if a kmer contains a given qkmer pattern using nucleotide_matches()
 */
 PG_FUNCTION_INFO_V1(contains);
@@ -853,30 +976,22 @@ Datum
 contains(PG_FUNCTION_ARGS)
 {
     // Get args
-    text *pattern_text = PG_GETARG_TEXT_P(0); // qkmer pattern
+    Qkmer *qkmer = (Qkmer *) PG_GETARG_POINTER(0); // Qkmer query pattern
     Kmer *kmer = (Kmer *) PG_GETARG_POINTER(1);    // kmer to match, iteratively generated from generate_kmers()
-    int pattern_length, kmer_length;
+    int qkmer_length, kmer_length;
 
-    // Convert to C strings
-    char *pattern = text_to_cstring(pattern_text);
+    // Validations for both types is already done in their respective types! We wouldn't even be here if they weren't valid!
 
-    // Validate the qkmer pattern
-    if (!validate_qkmer_pattern(pattern)) {
-        ereport(ERROR, (errmsg("Invalid qkmer pattern provided!")));
-    }
-
-    // Kmer is already valid if it's in a Kmer object, which was generated from a DNA sequence (and validated again in generate_kmers)
-
-    pattern_length = strlen(pattern);
+    qkmer_length = strlen(qkmer->sequence);
     kmer_length = kmer->length;
 
     // Fail if lengths do not match
-    if (pattern_length != kmer_length) {
-        ereport(ERROR, (errmsg("Pattern and kmer lengths do not match")));
+    if (qkmer_length != kmer_length) {
+        ereport(ERROR, (errmsg("Qkmer pattern and kmer lengths do not match")));
     }
 
     // Compare the pattern with the encoded kmer bit sequence
-    for (int i = 0; i < pattern_length; i++) {
+    for (int i = 0; i < qkmer_length; i++) {
         // Decode the nucleotide at position i from the Kmer bit_sequence
         int bit_offset = i * 2; // Offset in the 64-bit bit_sequence
         uint64_t nucleotide_bits = (kmer->bit_sequence >> bit_offset) & 0x3; // Extract 2 bits for the nucleotide
@@ -893,7 +1008,7 @@ contains(PG_FUNCTION_ARGS)
         }
 
         // Compare the nucleotide with the pattern using nucleotide_matches()
-        if (!nucleotide_matches(nucleotide, pattern[i])) {
+        if (!nucleotide_matches(nucleotide, qkmer->sequence[i])) {
             PG_RETURN_BOOL(false); // Return false if there's a mismatch
         }
     }
