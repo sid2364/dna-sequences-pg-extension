@@ -40,6 +40,8 @@ SELECT pg_column_size(dna('ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA
 ------------------
 --             24
 
+SELECT length(dna('ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG'));
+
 
 SELECT generate_kmers('ATCGTAGCGT', 3); -- Should return 8 kmers / non-uniques!
 -- Above is the same as SELECT generate_kmers(dna('ATCGTAGCGT'), 3);
@@ -122,9 +124,12 @@ CREATE TABLE dna_sequences (
     id SERIAL PRIMARY KEY,
     sequence dna
 );
---
---COPY dna_sequences(sequence)
---FROM '/home/sid/Study/sra-data/random_nucleotides.txt'
---WITH (FORMAT text);
---\copy dna_sequences(sequence) FROM 'random_nucleotides.txt' WITH (FORMAT text);
 
+COPY dna_sequences (sequence)
+FROM '/tmp/random_nucleotides.txt'
+WITH (FORMAT text);
+
+SELECT id, pg_column_size(sequence) AS size
+FROM dna_sequences;
+
+SELECT id, length(sequence) AS length, pg_column_size(sequence) AS size FROM dna_sequences;
