@@ -1,6 +1,6 @@
 #include "postgres.h"
 #include "utils/varlena.h"
-#include "varatt.h" // For SET_VARSIZE!
+//#include "varatt.h" // For SET_VARSIZE!
 #include "fmgr.h"
 #include "libpq/pqformat.h"
 #include "utils/fmgrprotos.h"
@@ -165,12 +165,9 @@ static bool validate_dna_sequence(const char *sequence) {
 static Dna * dna_make(const char *sequence)
 {
     uint64_t length = (uint64_t) strlen(sequence);
-    elog(INFO, "dna_make(): length/strlen = %" PRIu64, length);
-
     uint64_t num_bits = length * 2;  // 2 bits per nucleotide
     uint64_t bit_length = (num_bits + 63) / 64;  // Number of 64-bit chunks we need, rest will be padded with zeros
     Size dna_size = offsetof(Dna, bit_sequence) + bit_length * sizeof(uint64_t);
-    elog(INFO, "dna_make(): offsetof(Dna, bit_sequence) = %" PRIu64 ", bit_length * sizeof(uint64_t) = %" PRIu64, offsetof(Dna, bit_sequence), bit_length * sizeof(uint64_t));
 
     // Allocate memory for Dna struct and bit_sequence, set all bits to 0 (which is why we use palloc0 and not palloc)
     Dna *dna = (Dna *) palloc0(dna_size);
@@ -185,11 +182,9 @@ static Dna * dna_make(const char *sequence)
     SET_VARSIZE(dna, dna_size); // No need to add VARHDRSZ since the library does it for us!
     //dna->vl_len_ = VARHDRSZ + dna_size;
     dna->length = length;
-    elog(INFO, "dna_make(): dna->length = %" PRIu64, dna->length);
 
     // Encode the DNA sequence directly into bit_sequence, pointer magic
     encode_dna(sequence, dna->bit_sequence, length);
-
     return dna;
 }
 
@@ -223,7 +218,7 @@ PG_FUNCTION_INFO_V1(dna_out);
 Datum
 dna_out(PG_FUNCTION_ARGS)
 {
-  Dna *dna = PG_GETARG_DNA_P(0);
+  Dna *dna = PG_GETARG_VARLENA_P(0);
   char *result = dna_to_str(dna);
   PG_FREE_IF_COPY(dna, 0);
   PG_RETURN_CSTRING(result);
@@ -248,6 +243,7 @@ dna_recv(PG_FUNCTION_ARGS)
     Dna *dna = (Dna *) palloc0(dna_size);
     SET_VARSIZE(dna, dna_size);
     //dna->vl_len_ = VARHDRSZ + dna_size;
+	
     dna->length = length;
 
     for (uint64_t i = 0; i < bit_length; i++) {
@@ -295,7 +291,7 @@ PG_FUNCTION_INFO_V1(dna_cast_to_text);
 Datum
 dna_cast_to_text(PG_FUNCTION_ARGS)
 {
-  Dna *dna  = PG_GETARG_DNA_P(0);
+  Dna *dna  = PG_GETARG_VARLENA_P(0);
   text *out = (text *)DirectFunctionCall1(textin,
             PointerGetDatum(dna_to_str(dna)));
   PG_FREE_IF_COPY(dna, 0);
@@ -313,7 +309,7 @@ PG_FUNCTION_INFO_V1(dna_to_string);
 Datum
 dna_to_string(PG_FUNCTION_ARGS)
 {
-    Dna *dna = PG_GETARG_DNA_P(0);
+    Dna *dna = PG_GETARG_VARLENA_P(0);
     char *result = decode_dna(dna->bit_sequence, dna->length);  // Decode bit_sequence to a readable string
     PG_FREE_IF_COPY(dna, 0);
     PG_RETURN_CSTRING(result);
@@ -344,8 +340,8 @@ PG_FUNCTION_INFO_V1(equals);
 Datum
 equals(PG_FUNCTION_ARGS)
 {
-  Dna *dna1 = PG_GETARG_DNA_P(0);
-  Dna *dna2 = PG_GETARG_DNA_P(1);
+  Dna *dna1 = PG_GETARG_VARLENA_P(0);
+  Dna *dna2 = PG_GETARG_VARLENA_P(1);
   bool result = dna_eq_internal(dna1, dna2);
   PG_FREE_IF_COPY(dna1, 0);
   PG_FREE_IF_COPY(dna2, 1);
@@ -356,9 +352,8 @@ PG_FUNCTION_INFO_V1(length);
 Datum
 length(PG_FUNCTION_ARGS)
 {
-    Dna *dna = PG_GETARG_DNA_P(0);
+    Dna *dna = PG_GETARG_VARLENA_P(0);
     uint64_t length = dna->length;  // Directly get the length field
-    elog(INFO, "length(): dna->length = %" PRIu64, length);
     PG_FREE_IF_COPY(dna, 0);
     PG_RETURN_INT32(length);
 }
@@ -367,8 +362,8 @@ PG_FUNCTION_INFO_V1(dna_ne);
 Datum
 dna_ne(PG_FUNCTION_ARGS)
 {
-    Dna *dna1 = PG_GETARG_DNA_P(0);
-    Dna *dna2 = PG_GETARG_DNA_P(1);
+    Dna *dna1 = PG_GETARG_VARLENA_P(0);
+    Dna *dna2 = PG_GETARG_VARLENA_P(1);
     bool result = !dna_eq_internal(dna1, dna2);  // ~ the result of dna_eq_internal, viola!
     PG_FREE_IF_COPY(dna1, 0);
     PG_FREE_IF_COPY(dna2, 1);
@@ -732,7 +727,7 @@ generate_kmers(PG_FUNCTION_ARGS)
         oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
 
         // Extract arguments
-        dna = PG_GETARG_DNA_P(0); // We know the first argument is a DNA sequence (and not just text)
+        dna = PG_GETARG_VARLENA_P(0); // We know the first argument is a DNA sequence (and not just text)
         k = PG_GETARG_INT32(1);
 
         // Validate k
