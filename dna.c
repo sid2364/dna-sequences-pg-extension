@@ -1,6 +1,6 @@
 #include "postgres.h"
 #include "utils/varlena.h"
-//#include "varatt.h" // For SET_VARSIZE!
+#include "varatt.h" // For SET_VARSIZE!
 #include "fmgr.h"
 #include "libpq/pqformat.h"
 #include "utils/fmgrprotos.h"
