@@ -133,3 +133,19 @@ SELECT id, pg_column_size(sequence) AS size
 FROM dna_sequences;
 
 SELECT id, length(sequence) AS length, pg_column_size(sequence) AS size FROM dna_sequences;
+
+--- Now count kmers on the massive table
+WITH kmers AS (
+    SELECT k.kmer, COUNT(*) AS count
+    FROM dna_sequences d,
+         LATERAL generate_kmers(d.sequence, 5) AS k(kmer)
+    GROUP BY k.kmer
+)
+SELECT
+    SUM(count) AS total_count,
+    COUNT(*) AS distinct_count,
+    COUNT(*) FILTER (WHERE count = 1) AS unique_count
+FROM kmers;
+
+-- test this: whenever you access dna, use VARDATA(dna) and then get use that instead of the pointer directly
+-- also check PG_DETOAST_DATUM_COPY(dna)

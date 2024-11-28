@@ -36,6 +36,9 @@ def generate_random_nucleotides(output_file, num_nucleotides=10000000):
 output_file = 'random_nucleotides_10M_100Mb.txt'
 generate_random_nucleotides(output_file, 10_000_000)
 
+output_file = 'random_nucleotides_200K_2Mb.txt'
+generate_random_nucleotides(output_file, 200_000)
+
 output_file = 'random_nucleotides_1M_10Mb.txt'
 generate_random_nucleotides(output_file, 1_000_000)
 
