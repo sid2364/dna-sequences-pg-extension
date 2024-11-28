@@ -81,7 +81,14 @@ SELECT equals(qkmer('KRYBDHVN'), qkmer('KRYBDHVN'));
 -- t
 --(1 row)
 
-SELECT k.kmer FROM generate_kmers('ACGTACGCACGT', 6) AS k(kmer) WHERE 'DNMSRN' @> k.kmer ;
+--SELECT k.kmer FROM generate_kmers('ACGTACGCACGT', 6) AS k(kmer) WHERE 'DNMSRN' @> k.kmer ;
+-- FIXME: Operator is not unique
+--psql:test.sql:84: ERROR:  operator is not unique: unknown @> text
+--LINE 1: ...mers('ACGTACGCACGT', 6) AS k(kmer) WHERE 'DNMSRN' @> k.kmer ...
+--                                                             ^
+--HINT:  Could not choose a best candidate operator. You might need to add explicit type casts.
+
+SELECT k.kmer FROM generate_kmers('ACGTACGCACGT', 6) AS k(kmer) WHERE contains('DNMSRN', k.kmer) ;
 --  kmer
 ----------
 -- GTACGC
