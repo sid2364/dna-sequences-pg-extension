@@ -28,7 +28,8 @@ CREATE TYPE dna (
   output         = dna_out,
   receive        = dna_recv,
   send           = dna_send,
-  alignment      = int
+  alignment      = int,
+  storage        = extended
 );
 
 CREATE OR REPLACE FUNCTION dna(text)

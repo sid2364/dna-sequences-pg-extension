@@ -35,7 +35,7 @@ typedef struct Dna
 // In simple words, datum is like void * with additional size header and here we define macros.
 #define DatumGetDnaP(X)  ((Dna *) DatumGetPointer(X)) // We convert the datum pointer into a dna pointer
 #define DnaPGetDatum(X)  PointerGetDatum(X) // We covert the dna pointer into a Datum pointer
-#define PG_GETARG_DNA_P(n) DatumGetDnaP(PG_GETARG_DATUM(n)) // We get the nth argument given to a function
+#define PG_GETARG_DNA_P(n) DatumGetDnaP(PG_GETARG_VARLENA_P(n)) // We get the nth argument given to a function
 #define PG_RETURN_DNA_P(x) return DnaPGetDatum(x) // ¯\_(ツ)_/¯
 
 /**
@@ -219,7 +219,7 @@ PG_FUNCTION_INFO_V1(dna_out);
 Datum
 dna_out(PG_FUNCTION_ARGS)
 {
-  Dna *dna = PG_GETARG_DNA_P(0);
+  Dna *dna = PG_GETARG_VARLENA_P(0);
   char *result = dna_to_str(dna);
   PG_FREE_IF_COPY(dna, 0);
   PG_RETURN_CSTRING(result);
@@ -263,7 +263,7 @@ PG_FUNCTION_INFO_V1(dna_send);
 Datum
 dna_send(PG_FUNCTION_ARGS)
 {
-    Dna *dna = (Dna *) PG_GETARG_POINTER(0);
+    Dna *dna = (Dna *) PG_GETARG_VARLENA_P(0);
     StringInfoData buf;
 
     int bit_length = (dna->length * 2 + 63) / 64;
@@ -291,7 +291,7 @@ PG_FUNCTION_INFO_V1(dna_cast_to_text);
 Datum
 dna_cast_to_text(PG_FUNCTION_ARGS)
 {
-  Dna *dna  = PG_GETARG_DNA_P(0);
+  Dna *dna  = PG_GETARG_VARLENA_P(0);
   text *out = (text *)DirectFunctionCall1(textin,
             PointerGetDatum(dna_to_str(dna)));
   PG_FREE_IF_COPY(dna, 0);
@@ -309,7 +309,7 @@ PG_FUNCTION_INFO_V1(dna_to_string);
 Datum
 dna_to_string(PG_FUNCTION_ARGS)
 {
-    Dna *dna = PG_GETARG_DNA_P(0);
+    Dna *dna = PG_GETARG_VARLENA_P(0);
     char *result = decode_dna(dna->bit_sequence, dna->length);  // Decode bit_sequence to a readable string
     PG_FREE_IF_COPY(dna, 0);
     PG_RETURN_CSTRING(result);
@@ -340,8 +340,8 @@ PG_FUNCTION_INFO_V1(equals);
 Datum
 equals(PG_FUNCTION_ARGS)
 {
-  Dna *dna1 = PG_GETARG_DNA_P(0);
-  Dna *dna2 = PG_GETARG_DNA_P(1);
+  Dna *dna1 = PG_GETARG_VARLENA_P(0);
+  Dna *dna2 = PG_GETARG_VARLENA_P(1);
   bool result = dna_eq_internal(dna1, dna2);
   PG_FREE_IF_COPY(dna1, 0);
   PG_FREE_IF_COPY(dna2, 1);
@@ -352,7 +352,7 @@ PG_FUNCTION_INFO_V1(length);
 Datum
 length(PG_FUNCTION_ARGS)
 {
-    Dna *dna = PG_GETARG_DNA_P(0);
+    Dna *dna = PG_GETARG_VARLENA_P(0);
     int length = dna->length;  // Directly get the length field
     PG_FREE_IF_COPY(dna, 0);
     PG_RETURN_INT32(length);
@@ -362,14 +362,13 @@ PG_FUNCTION_INFO_V1(dna_ne);
 Datum
 dna_ne(PG_FUNCTION_ARGS)
 {
-    Dna *dna1 = PG_GETARG_DNA_P(0);
-    Dna *dna2 = PG_GETARG_DNA_P(1);
+    Dna *dna1 = PG_GETARG_VARLENA_P(0);
+    Dna *dna2 = PG_GETARG_VARLENA_P(1);
     bool result = !dna_eq_internal(dna1, dna2);  // ~ the result of dna_eq_internal, viola!
     PG_FREE_IF_COPY(dna1, 0);
     PG_FREE_IF_COPY(dna2, 1);
     PG_RETURN_BOOL(result);
 }
-
 
 /********************************************************************************************
 * Kmer functions
@@ -727,7 +726,7 @@ generate_kmers(PG_FUNCTION_ARGS)
         oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
 
         // Extract arguments
-        dna = PG_GETARG_DNA_P(0); // We know the first argument is a DNA sequence (and not just text)
+        dna = PG_GETARG_VARLENA_P(0); // We know the first argument is a DNA sequence (and not just text)
         k = PG_GETARG_INT32(1);
 
         // Validate k

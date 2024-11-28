@@ -135,3 +135,39 @@ CREATE TABLE dna_sequences (
 --WITH (FORMAT text);
 --\copy dna_sequences(sequence) FROM 'random_nucleotides.txt' WITH (FORMAT text);
 
+COPY dna_sequences (sequence)
+FROM '/tmp/random_nucleotides.txt'
+WITH (FORMAT text);
+
+SELECT id, pg_column_size(sequence) AS size
+FROM dna_sequences;
+
+SELECT id, length(sequence) AS length, pg_column_size(sequence) AS size FROM dna_sequences;
+
+--- Now count kmers on the massive table
+--WITH kmers AS (
+--    SELECT k.kmer, COUNT(*) AS count
+--    FROM dna_sequences d,
+--         LATERAL generate_kmers(d.sequence, 5) AS k(kmer)
+--    GROUP BY k.kmer
+--)
+--SELECT
+--    SUM(count) AS total_count,
+--    COUNT(*) AS distinct_count,
+--    COUNT(*) FILTER (WHERE count = 1) AS unique_count
+--FROM kmers;
+
+--SELECT id, kmer
+--FROM dna_sequences, LATERAL generate_kmers(sequence, 5) AS kmer;
+
+WITH kmers AS (
+    SELECT k.kmer, COUNT(*) AS count
+    FROM dna_sequences d,
+         LATERAL generate_kmers(d.sequence, 10) AS k(kmer)
+    GROUP BY k.kmer
+)
+SELECT
+    SUM(count) AS total_count,
+    COUNT(*) AS distinct_count,
+    COUNT(*) FILTER (WHERE count = 1) AS unique_count
+FROM kmers;
