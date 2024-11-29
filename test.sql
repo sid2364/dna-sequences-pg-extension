@@ -128,3 +128,4 @@ CREATE TABLE dna_sequences (
 --WITH (FORMAT text);
 --\copy dna_sequences(sequence) FROM 'random_nucleotides.txt' WITH (FORMAT text);
 
+SELECT get_oid(kmer('ATCG'));

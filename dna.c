@@ -8,11 +8,18 @@
 #include "funcapi.h"
 #include "utils/builtins.h" // For cstring_to_text
 #include "common/hashfn.h" // For hash_any() in kmer_hash
+#include "access/spgist.h"
+#include "parser/parse_type.h"
+#include "utils/lsyscache.h"
 
 #include <math.h>
 #include <float.h>
 #include <stdlib.h>
 #include <stdint.h>
+
+#include "nodes/nodes.h"
+#include "nodes/makefuncs.h"
+#include "nodes/parsenodes.h"
 
 PG_MODULE_MAGIC;
 
@@ -54,6 +61,8 @@ typedef struct Kmer {
 #define KmerPGetDatum(X)  PointerGetDatum(X) // We covert the dna pointer into a Datum pointer
 #define PG_GETARG_KMER_P(n) DatumGetKmerP(PG_GETARG_DATUM(n)) // We get the nth argument given to a function
 #define PG_RETURN_KMER_P(x) return KmerPGetDatum(x) // ¯\_(ツ)_/¯
+
+
 
 /**
  * Qkmer structure
@@ -995,6 +1004,8 @@ qkmer_send(PG_FUNCTION_ARGS)
 * N        A, C, G, T
 */
 static bool nucleotide_matches(char nucleotide, char iupac) {
+
+
     switch (iupac) {
         case 'A': return nucleotide == 'A';
         case 'T': return nucleotide == 'T';
@@ -1067,3 +1078,212 @@ contains(PG_FUNCTION_ARGS)
     PG_RETURN_BOOL(true);
 }
 
+// A function to test and get the Oid of the postgres type kmer
+PG_FUNCTION_INFO_V1(get_oid);
+Datum
+get_oid(PG_FUNCTION_ARGS){
+    Oid int4_oid = typenameTypeId(NULL, makeTypeName("kmer"));
+    PG_RETURN_INT32(int4_oid);
+}
+
+
+PG_FUNCTION_INFO_V1(spgist_kmer_config);
+Datum
+spgist_kmer_config(PG_FUNCTION_ARGS)
+{
+    spgConfigIn  *cfgin  = (spgConfigIn *) PG_GETARG_POINTER(0);
+    spgConfigOut *cfgout = (spgConfigOut *) PG_GETARG_POINTER(1);
+
+    Oid KMEROID = typenameTypeId(NULL, makeTypeName("kmer"));
+
+    cfgout->prefixType = KMEROID;
+    cfgout->leafType = KMEROID;
+    cfgout->labelType = VOIDOID;
+    
+      
+    cfgout->canReturnData = true; // A node may contain already the value that we want without it being a leaf
+    cfgout->longValuesOK = false;   // ¯\_(ツ)_/¯
+
+    PG_RETURN_VOID();  
+}
+
+/*
+This function decides how to explore the tree when we have the spgChooseIn object containing the value to index
+*/
+PG_FUNCTION_INFO_V1(spgist_dna_choose);
+Datum
+spgist_dna_choose(PG_FUNCTION_ARGS)
+{
+    spgChooseIn  *in  = (spgChooseIn *) PG_GETARG_POINTER(0); 
+    spgChooseOut *out = (spgChooseOut *) PG_GETARG_POINTER(1);  
+
+    char *datum = TextDatumGetCString(in->datum); // It represents the value to index, it is not the same as the prefix of the node
+
+    char *prefix = NULL; // The prefix or text contained in the node.
+
+
+    if (prefix && strncmp(datum, prefix, strlen(prefix)) == 0) { // This condition is true if the n first letters of the datum correspond to 
+        char *restDatum = datum + strlen(prefix);
+
+        int i;
+        bool matchFound = false;
+
+        for (i = 0; i < in->nNodes; i++) { // We look for the correct node child to explore
+            if (DatumGetPointer(in->nodeLabels[i]) != NULL) { 
+                char *nodeLabel = TextDatumGetCString(in->nodeLabels[i]);
+
+                if (strncmp(restDatum, nodeLabel, strlen(nodeLabel)) == 0) { // We compare again our current value with the value of the node childs
+                    out->resultType = spgMatchNode;
+                    out->result.matchNode.nodeN = i;  // We go to the ith node child and, by logic, this should be the only one to get a match
+                    out->result.matchNode.levelAdd = 1;
+
+                    out->result.matchNode.restDatum = CStringGetTextDatum(restDatum + strlen(nodeLabel));
+                    matchFound = true;
+                    break;
+                }
+            }
+        }
+        if (!matchFound) {
+            out->resultType = spgAddNode;
+            out->result.addNode.nodeLabel = CStringGetTextDatum(restDatum); // We try to add the rest of the datum that did not encounter a prefix 
+            out->result.addNode.nodeN = in->nNodes; 
+        }
+    }
+    else
+    {
+        out->resultType = spgAddNode;
+        out->result.addNode.nodeLabel = CStringGetTextDatum(datum); // We try to add the rest of the entire datum since we did not find any corresponding prefix
+        out->result.addNode.nodeN = in->nNodes;
+    }
+
+    PG_RETURN_VOID();
+}
+
+char* commonPrefix(char* str1, char* str2, int minLength);
+
+char* commonPrefix(char* str1, char* str2, int minLength) {
+    static char prefix[33]; // We already know that the size of a kmer is 32, we add one more place so that we can put the '\0' symbol at the end of it
+    int i = 0;
+    while (str1[i] == str2[i] && i < minLength) {
+        prefix[i] = str1[i];
+        i++;
+    }
+    prefix[i] = '\0';
+    return prefix;
+}
+
+
+PG_FUNCTION_INFO_V1(kmer_picksplit);
+Datum kmer_picksplit(PG_FUNCTION_ARGS) {
+    int i = 0;
+    spgPickSplitIn *in = (spgPickSplitIn *) PG_GETARG_POINTER(0);
+    spgPickSplitOut *out = (spgPickSplitOut *) PG_GETARG_POINTER(1);
+    out->hasPrefix = true;
+    char **data = (char **) palloc(in->nTuples * sizeof(char *)); // Will contain the content of the different leaves
+    int minLength = 0;
+    
+    
+    // We store the content of the different tuples
+    for (i = 0; i < in->nTuples; i++) {
+        data[i] = TextDatumGetCString(in->datums[i]);
+    }
+    char* prefix = data[0]; // The start of our prefix finder !
+
+    // We find the size of the smallest size of the different tuples
+    // Because the prefix of the inner node will never have a size greater than the size of the smallest tuple
+    
+    for (i = 1; i < in->nTuples; i++) {
+        int len = strlen(data[i]);
+        if (len < minLength) {
+            minLength = len;
+        }
+    }
+
+    
+    for ( i = 1; i < in->nTuples; i++) {
+        prefix = commonPrefix(prefix, data[i], minLength);
+        if (strlen(prefix) == 0) { // If in the run we did not find the prefix then it's not necessary to continue
+            break;
+        }
+    }
+
+    int lenPrefix = strlen(prefix);
+    if (lenPrefix == 0) { // If no prefix exist, we do not create an inner node (?)
+            out->hasPrefix = false;
+            out->prefixDatum = (Datum) 0;
+    }
+    else{
+        out->hasPrefix = true;
+        out->prefixDatum = CStringGetTextDatum(prefix);   
+        out->nodeLabels = NULL;
+        out->nNodes = 4; // The node will have at best 4 nodes (if the next char is A,T,C or G)
+        out->mapTuplesToNodes = (int *) palloc(in->nTuples * sizeof(int));
+        for (i = 0; i < in->nTuples; i++) {
+            // Here, we create a classment based on the character read after the prefix for each tuple
+            
+            char nextChar = data[i][lenPrefix]; // Character after the prefix for each tuple, the prefix itself should not be of the size of 32, so this operation is safe
+
+            switch (nextChar) {
+                case 'A': out->mapTuplesToNodes[i] = 0; break;
+                case 'C': out->mapTuplesToNodes[i] = 1; break;
+                case 'G': out->mapTuplesToNodes[i] = 2; break;
+                case 'T': out->mapTuplesToNodes[i] = 3; break;
+                default: out->mapTuplesToNodes[i] = 4; // This cannot be attained
+            }
+        }
+
+    }
+
+    PG_RETURN_VOID();
+}
+
+PG_FUNCTION_INFO_V1(inner_consistent);
+Datum inner_consistent(PG_FUNCTION_ARGS) {
+    spgInnerConsistentIn *in = (spgInnerConsistentIn *) PG_GETARG_POINTER(0);
+    spgInnerConsistentOut *out = (spgInnerConsistentOut *) PG_GETARG_POINTER(1);
+
+    out->nNodes = 0; 
+    out->nodeNumbers = palloc(in->nNodes * sizeof(int)); // I give huge space for the worst case
+    
+    for (int i = 0; i < in->nNodes; i++) {
+      char *label = TextDatumGetCString(in->nodeLabels[i]);
+      for (int j = 0; j < in->nkeys; j++ ){
+        ScanKey key =  &in->scankeys[j]; // If I am correct, the array ScanKey contains a ScanKey which can be used here
+        if ((key->sk_strategy == 1) && strncmp(TextDatumGetCString(key->sk_argument), label, strlen(label)) == 0) { // (key->sk_strategy == 1) might correspond to the "=" operation
+          out->nodeNumbers[out->nNodes] = i; // If our condition is fufilled then we add the node to explore
+          out->nNodes++;
+        }
+      }
+    }
+    PG_RETURN_VOID();
+}
+
+
+PG_FUNCTION_INFO_V1(leaf_consistent);
+Datum
+leaf_consistent(PG_FUNCTION_ARGS)
+{
+    spgLeafConsistentIn *in = (spgLeafConsistentIn *) PG_GETARG_POINTER(0);
+    spgLeafConsistentOut *out = (spgLeafConsistentOut *) PG_GETARG_POINTER(1);
+    bool result = true;
+
+    out->recheck = false;         
+    out->recheckDistances = false; 
+    out->distances = NULL;         
+
+    char *leafValue = TextDatumGetCString(in->leafDatum);
+
+    for (int i = 0; i < in->nkeys; i++)
+    {   // We are basically doing the same thing as in the inner_consistent function
+        ScanKey key = &in->scankeys[i];
+        if ((key->sk_strategy == 1) && strncmp(TextDatumGetCString(key->sk_argument), leafValue, strlen(leafValue)) == 0) { // (key->sk_strategy == 1) might correspond to the "=" operation, or idk please send help
+            continue;
+        }
+        else{
+            result = false;
+            break;
+        }
+    }
+
+    PG_RETURN_BOOL(result);
+}

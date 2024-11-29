@@ -181,6 +181,11 @@ CREATE FUNCTION length(kmer)
   AS 'MODULE_PATHNAME', 'kmer_length'
   LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
+CREATE FUNCTION get_oid(kmer)
+  RETURNS int
+  AS 'MODULE_PATHNAME', 'get_oid'
+  LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
 --Generate K-mers from DNA
 --First arg is cast from string to DNA with "dna_cast_from_text" directly
 --Returns a set of k-mers (of type kmer!)
@@ -261,3 +266,41 @@ CREATE OPERATOR @> (
     RIGHTARG = kmer,
     PROCEDURE = contains
 );
+
+
+
+--For the index part
+
+CREATE FUNCTION spgist_kmer_config(internal, internal) RETURNS void
+    AS 'MODULE_PATHNAME', 'spgist_kmer_config'
+    LANGUAGE C IMMUTABLE;
+
+CREATE FUNCTION spgist_kmer_choose(internal, internal) RETURNS void
+    AS 'MODULE_PATHNAME', 'spgist_dna_choose'
+    LANGUAGE C IMMUTABLE;
+
+CREATE FUNCTION kmer_picksplit(internal, internal) RETURNS void
+    AS 'MODULE_PATHNAME', 'kmer_picksplit'
+    LANGUAGE C IMMUTABLE;
+
+
+CREATE FUNCTION inner_consistent(internal, internal) RETURNS void
+    AS 'MODULE_PATHNAME', 'inner_consistent'
+    LANGUAGE C IMMUTABLE;
+
+
+CREATE FUNCTION leaf_consistent(internal, internal) RETURNS bool
+    AS 'MODULE_PATHNAME', 'leaf_consistent'
+    LANGUAGE C IMMUTABLE;
+
+
+
+CREATE OPERATOR CLASS spgist_kmer_ops
+DEFAULT FOR TYPE kmer USING spgist AS
+    FUNCTION 1 spgist_kmer_config(internal, internal),
+    FUNCTION 2 spgist_kmer_choose(internal, internal),
+    FUNCTION 3 kmer_picksplit(internal, internal),
+    FUNCTION 4 inner_consistent(internal, internal),
+    FUNCTION 5 leaf_consistent(internal, internal);
+
+
