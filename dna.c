@@ -1078,7 +1078,13 @@ contains(PG_FUNCTION_ARGS)
     PG_RETURN_BOOL(true);
 }
 
-// A function to test and get the Oid of the postgres type kmer
+/********************************************************************************************
+* SP-GiST functions
+********************************************************************************************/
+
+/*
+ A function to test and get the Oid of the Postgres type kmer
+*/
 PG_FUNCTION_INFO_V1(get_oid);
 Datum
 get_oid(PG_FUNCTION_ARGS){
@@ -1086,7 +1092,9 @@ get_oid(PG_FUNCTION_ARGS){
     PG_RETURN_INT32(int4_oid);
 }
 
-
+/*
+Returns static information about the index implementation, including the data type OIDs of the prefix and node label data types
+*/
 PG_FUNCTION_INFO_V1(spgist_kmer_config);
 Datum
 spgist_kmer_config(PG_FUNCTION_ARGS)
@@ -1109,6 +1117,8 @@ spgist_kmer_config(PG_FUNCTION_ARGS)
 
 /*
 This function decides how to explore the tree when we have the spgChooseIn object containing the value to index
+
+Determines which child node an inserted value should go to, or signals the creation of a new child node if none make sense
 */
 PG_FUNCTION_INFO_V1(spgist_dna_choose);
 Datum
@@ -1120,7 +1130,6 @@ spgist_dna_choose(PG_FUNCTION_ARGS)
     char *datum = TextDatumGetCString(in->datum); // It represents the value to index, it is not the same as the prefix of the node
 
     char *prefix = NULL; // The prefix or text contained in the node.
-
 
     if (prefix && strncmp(datum, prefix, strlen(prefix)) == 0) { // This condition is true if the n first letters of the datum correspond to
         char *restDatum = datum + strlen(prefix);
@@ -1161,6 +1170,9 @@ spgist_dna_choose(PG_FUNCTION_ARGS)
 
 char* commonPrefix(char* str1, char* str2, int minLength);
 
+/*
+This function is used to find the common prefix between two strings
+*/
 char* commonPrefix(char* str1, char* str2, int minLength) {
     static char prefix[33]; // We already know that the size of a kmer is 32, we add one more place so that we can put the '\0' symbol at the end of it
     int i = 0;
@@ -1172,7 +1184,11 @@ char* commonPrefix(char* str1, char* str2, int minLength) {
     return prefix;
 }
 
+/*
+Decides how to create a new inner tuple over a set of leaf tuples.
 
+Partitions a set of input values into subsets for new child nodes and assigns prefixes and labels for the inner node
+*/
 PG_FUNCTION_INFO_V1(kmer_picksplit);
 Datum kmer_picksplit(PG_FUNCTION_ARGS) {
     int i = 0;
@@ -1181,7 +1197,6 @@ Datum kmer_picksplit(PG_FUNCTION_ARGS) {
     out->hasPrefix = true;
     char **data = (char **) palloc(in->nTuples * sizeof(char *)); // Will contain the content of the different leaves
     int minLength = 0;
-
 
     // We store the content of the different tuples
     for (i = 0; i < in->nTuples; i++) {
@@ -1198,7 +1213,6 @@ Datum kmer_picksplit(PG_FUNCTION_ARGS) {
             minLength = len;
         }
     }
-
 
     for ( i = 1; i < in->nTuples; i++) {
         prefix = commonPrefix(prefix, data[i], minLength);
@@ -1237,6 +1251,11 @@ Datum kmer_picksplit(PG_FUNCTION_ARGS) {
     PG_RETURN_VOID();
 }
 
+/*
+Returns set of nodes (branches) to follow during tree search.
+
+The function is called when we are at an inner node and we need to decide which child nodes to explore.
+*/
 PG_FUNCTION_INFO_V1(inner_consistent);
 Datum inner_consistent(PG_FUNCTION_ARGS) {
     spgInnerConsistentIn *in = (spgInnerConsistentIn *) PG_GETARG_POINTER(0);
@@ -1258,7 +1277,9 @@ Datum inner_consistent(PG_FUNCTION_ARGS) {
     PG_RETURN_VOID();
 }
 
-
+/*
+Checks if a value stored in a leaf node satisfies the query conditions and determines if additional rechecks are needed.
+*/
 PG_FUNCTION_INFO_V1(leaf_consistent);
 Datum
 leaf_consistent(PG_FUNCTION_ARGS)

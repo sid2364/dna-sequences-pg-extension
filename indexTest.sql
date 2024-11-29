@@ -1,4 +1,3 @@
-
 DROP TABLE IF EXISTS kmer_data_t;
 DO $$
 BEGIN
