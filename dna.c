@@ -8,6 +8,7 @@
 #include "funcapi.h"
 #include "utils/builtins.h" // For cstring_to_text
 #include "common/hashfn.h" // For hash_any() in kmer_hash
+#include <inttypes.h>
 #include "access/spgist.h"
 #include "parser/parse_type.h"
 #include "utils/lsyscache.h"
@@ -35,7 +36,7 @@ PG_MODULE_MAGIC;
 typedef struct Dna
 {
     char vl_len_[4];                    // Required header for PostgreSQL variable-length types
-    int32 length;                     // Length of the DNA sequence in nucleotides
+    uint64_t length;                     // Length of the DNA sequence in nucleotides
     uint64_t bit_sequence[FLEXIBLE_ARRAY_MEMBER];  // Array to store packed bits
 } Dna;
 
@@ -106,10 +107,10 @@ https://doxygen.postgresql.org/spgtextproc_8c_source.html
  * Calculate number of 64-bit chunks we need, since rest of the int will be padded with zeros,
  * we also store the length so that we can decode it later properly without decoding extra "00"s as "A"s
  */
-static void encode_dna(const char *sequence, uint64_t *bit_sequence, int length) {
-    for (int i = 0; i < length; i++) {
-        int offset = (i * 2) % 64;      // Offset for 2 bits per base
-        int index = i / 32;             // Each uint64_t holds 32 bases (64 bits)
+static void encode_dna(const char *sequence, uint64_t *bit_sequence, uint64_t length) {
+    for (uint64_t i = 0; i < length; i++) {
+        uint64_t offset = (i * 2) % 64;      // Offset for 2 bits per base
+        uint64_t index = i / 32;             // Each uint64_t holds 32 bases (64 bits)
 
         switch (sequence[i]) {
             case 'A': /* 00 */ break;
@@ -127,12 +128,12 @@ static void encode_dna(const char *sequence, uint64_t *bit_sequence, int length)
  *
  * We decode the sequence by shifting the bits to the right and then reading the last 2 bits to get the nucleotide
  */
-static char* decode_dna(const uint64_t *bit_sequence, int length) {
+static char* decode_dna(const uint64_t *bit_sequence, uint64_t length) {
     char *sequence = palloc0(length + 1);  // +1 for the null terminator which is added automatically by palloc0
 
-    for (int i = 0; i < length; i++) {
-        int offset = (i * 2) % 64; // Offset of the current nucleotide since it's 2 bits long
-        int index = i / 32;
+    for (uint64_t i = 0; i < length; i++) {
+        uint64_t offset = (i * 2) % 64; // Offset of the current nucleotide since it's 2 bits long
+        uint64_t index = i / 32;
         uint64_t bits = (bit_sequence[index] >> offset) & 0x3;
 
         switch (bits) {
@@ -172,10 +173,9 @@ static bool validate_dna_sequence(const char *sequence) {
  */
 static Dna * dna_make(const char *sequence)
 {
-    int length = strlen(sequence);
-
-    int num_bits = length * 2;  // 2 bits per nucleotide
-    int bit_length = (num_bits + 63) / 64;  // Number of 64-bit chunks we need, rest will be padded with zeros
+    uint64_t length = (uint64_t) strlen(sequence);
+    uint64_t num_bits = length * 2;  // 2 bits per nucleotide
+    uint64_t bit_length = (num_bits + 63) / 64;  // Number of 64-bit chunks we need, rest will be padded with zeros
     Size dna_size = offsetof(Dna, bit_sequence) + bit_length * sizeof(uint64_t);
 
     // Allocate memory for Dna struct and bit_sequence, set all bits to 0 (which is why we use palloc0 and not palloc)
@@ -194,7 +194,6 @@ static Dna * dna_make(const char *sequence)
 
     // Encode the DNA sequence directly into bit_sequence, pointer magic
     encode_dna(sequence, dna->bit_sequence, length);
-
     return dna;
 }
 
@@ -228,7 +227,7 @@ PG_FUNCTION_INFO_V1(dna_out);
 Datum
 dna_out(PG_FUNCTION_ARGS)
 {
-  Dna *dna = PG_GETARG_DNA_P(0);
+  Dna *dna = PG_GETARG_VARLENA_P(0);
   char *result = dna_to_str(dna);
   PG_FREE_IF_COPY(dna, 0);
   PG_RETURN_CSTRING(result);
@@ -244,18 +243,19 @@ dna_recv(PG_FUNCTION_ARGS)
 {
     StringInfo buf = (StringInfo) PG_GETARG_POINTER(0);
 
-    int length = pq_getmsgint(buf, sizeof(int));
-    int num_bits = length * 2;  // Each DNA nucleotide is 2 bits
-    int bit_length = (num_bits + 63) / 64;  // Number of 64-bit chunks needed, rounding up
+    uint64_t length = pq_getmsgint(buf, sizeof(uint64_t));
+    uint64_t num_bits = length * 2;  // Each DNA nucleotide is 2 bits
+    uint64_t bit_length = (num_bits + 63) / 64;  // Number of 64-bit chunks needed, rounding up
 
     Size dna_size = offsetof(Dna, bit_sequence) + bit_length * sizeof(uint64_t);
 
     Dna *dna = (Dna *) palloc0(dna_size);
     SET_VARSIZE(dna, dna_size);
     //dna->vl_len_ = VARHDRSZ + dna_size;
+
     dna->length = length;
 
-    for (int i = 0; i < bit_length; i++) {
+    for (uint64_t i = 0; i < bit_length; i++) {
         dna->bit_sequence[i] = pq_getmsgint64(buf);
     }
 
@@ -275,12 +275,12 @@ dna_send(PG_FUNCTION_ARGS)
     Dna *dna = (Dna *) PG_GETARG_POINTER(0);
     StringInfoData buf;
 
-    int bit_length = (dna->length * 2 + 63) / 64;
+    uint64_t bit_length = (dna->length * 2 + 63) / 64;
 
     pq_begintypsend(&buf);
-    pq_sendint(&buf, dna->length, sizeof(int));
+    pq_sendint(&buf, dna->length, sizeof(uint64_t));
 
-    for (int i = 0; i < bit_length; i++) {
+    for (uint64_t i = 0; i < bit_length; i++) {
         pq_sendint64(&buf, dna->bit_sequence[i]);
     }
     PG_RETURN_BYTEA_P(pq_endtypsend(&buf));
@@ -300,7 +300,7 @@ PG_FUNCTION_INFO_V1(dna_cast_to_text);
 Datum
 dna_cast_to_text(PG_FUNCTION_ARGS)
 {
-  Dna *dna  = PG_GETARG_DNA_P(0);
+  Dna *dna  = PG_GETARG_VARLENA_P(0);
   text *out = (text *)DirectFunctionCall1(textin,
             PointerGetDatum(dna_to_str(dna)));
   PG_FREE_IF_COPY(dna, 0);
@@ -318,7 +318,7 @@ PG_FUNCTION_INFO_V1(dna_to_string);
 Datum
 dna_to_string(PG_FUNCTION_ARGS)
 {
-    Dna *dna = PG_GETARG_DNA_P(0);
+    Dna *dna = PG_GETARG_VARLENA_P(0);
     char *result = decode_dna(dna->bit_sequence, dna->length);  // Decode bit_sequence to a readable string
     PG_FREE_IF_COPY(dna, 0);
     PG_RETURN_CSTRING(result);
@@ -329,14 +329,14 @@ dna_to_string(PG_FUNCTION_ARGS)
 */
 static bool dna_eq_internal(Dna *dna1, Dna *dna2)
 {
-    int bit_length = (dna1->length * 2 + 63) / 64;  // Number of 64-bit chunks needed
+    uint64_t bit_length = (dna1->length * 2 + 63) / 64;  // Number of 64-bit chunks needed
 
     if (dna1->length != dna2->length) {
         return false;  // Different lengths mean they can't be equal
     }
 
     // Compare each 64-bit chunk in the bit_sequence array
-    for (int i = 0; i < bit_length; i++) {
+    for (uint64_t i = 0; i < bit_length; i++) {
         if (dna1->bit_sequence[i] != dna2->bit_sequence[i]) {
             return false;  // If any chunk differs, the sequences are not equal
         }
@@ -349,8 +349,8 @@ PG_FUNCTION_INFO_V1(equals);
 Datum
 equals(PG_FUNCTION_ARGS)
 {
-  Dna *dna1 = PG_GETARG_DNA_P(0);
-  Dna *dna2 = PG_GETARG_DNA_P(1);
+  Dna *dna1 = PG_GETARG_VARLENA_P(0);
+  Dna *dna2 = PG_GETARG_VARLENA_P(1);
   bool result = dna_eq_internal(dna1, dna2);
   PG_FREE_IF_COPY(dna1, 0);
   PG_FREE_IF_COPY(dna2, 1);
@@ -361,8 +361,8 @@ PG_FUNCTION_INFO_V1(length);
 Datum
 length(PG_FUNCTION_ARGS)
 {
-    Dna *dna = PG_GETARG_DNA_P(0);
-    int length = dna->length;  // Directly get the length field
+    Dna *dna = PG_GETARG_VARLENA_P(0);
+    uint64_t length = dna->length;  // Directly get the length field
     PG_FREE_IF_COPY(dna, 0);
     PG_RETURN_INT32(length);
 }
@@ -371,8 +371,8 @@ PG_FUNCTION_INFO_V1(dna_ne);
 Datum
 dna_ne(PG_FUNCTION_ARGS)
 {
-    Dna *dna1 = PG_GETARG_DNA_P(0);
-    Dna *dna2 = PG_GETARG_DNA_P(1);
+    Dna *dna1 = PG_GETARG_VARLENA_P(0);
+    Dna *dna2 = PG_GETARG_VARLENA_P(1);
     bool result = !dna_eq_internal(dna1, dna2);  // ~ the result of dna_eq_internal, viola!
     PG_FREE_IF_COPY(dna1, 0);
     PG_FREE_IF_COPY(dna2, 1);
@@ -736,7 +736,7 @@ generate_kmers(PG_FUNCTION_ARGS)
         oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
 
         // Extract arguments
-        dna = PG_GETARG_DNA_P(0); // We know the first argument is a DNA sequence (and not just text)
+        dna = PG_GETARG_VARLENA_P(0); // We know the first argument is a DNA sequence (and not just text)
         k = PG_GETARG_INT32(1);
 
         // Validate k
@@ -1099,12 +1099,12 @@ spgist_kmer_config(PG_FUNCTION_ARGS)
     cfgout->prefixType = KMEROID;
     cfgout->leafType = KMEROID;
     cfgout->labelType = VOIDOID;
-    
-      
+
+
     cfgout->canReturnData = true; // A node may contain already the value that we want without it being a leaf
     cfgout->longValuesOK = false;   // ¯\_(ツ)_/¯
 
-    PG_RETURN_VOID();  
+    PG_RETURN_VOID();
 }
 
 /*
@@ -1114,22 +1114,22 @@ PG_FUNCTION_INFO_V1(spgist_dna_choose);
 Datum
 spgist_dna_choose(PG_FUNCTION_ARGS)
 {
-    spgChooseIn  *in  = (spgChooseIn *) PG_GETARG_POINTER(0); 
-    spgChooseOut *out = (spgChooseOut *) PG_GETARG_POINTER(1);  
+    spgChooseIn  *in  = (spgChooseIn *) PG_GETARG_POINTER(0);
+    spgChooseOut *out = (spgChooseOut *) PG_GETARG_POINTER(1);
 
     char *datum = TextDatumGetCString(in->datum); // It represents the value to index, it is not the same as the prefix of the node
 
     char *prefix = NULL; // The prefix or text contained in the node.
 
 
-    if (prefix && strncmp(datum, prefix, strlen(prefix)) == 0) { // This condition is true if the n first letters of the datum correspond to 
+    if (prefix && strncmp(datum, prefix, strlen(prefix)) == 0) { // This condition is true if the n first letters of the datum correspond to
         char *restDatum = datum + strlen(prefix);
 
         int i;
         bool matchFound = false;
 
         for (i = 0; i < in->nNodes; i++) { // We look for the correct node child to explore
-            if (DatumGetPointer(in->nodeLabels[i]) != NULL) { 
+            if (DatumGetPointer(in->nodeLabels[i]) != NULL) {
                 char *nodeLabel = TextDatumGetCString(in->nodeLabels[i]);
 
                 if (strncmp(restDatum, nodeLabel, strlen(nodeLabel)) == 0) { // We compare again our current value with the value of the node childs
@@ -1145,8 +1145,8 @@ spgist_dna_choose(PG_FUNCTION_ARGS)
         }
         if (!matchFound) {
             out->resultType = spgAddNode;
-            out->result.addNode.nodeLabel = CStringGetTextDatum(restDatum); // We try to add the rest of the datum that did not encounter a prefix 
-            out->result.addNode.nodeN = in->nNodes; 
+            out->result.addNode.nodeLabel = CStringGetTextDatum(restDatum); // We try to add the rest of the datum that did not encounter a prefix
+            out->result.addNode.nodeN = in->nNodes;
         }
     }
     else
@@ -1181,8 +1181,8 @@ Datum kmer_picksplit(PG_FUNCTION_ARGS) {
     out->hasPrefix = true;
     char **data = (char **) palloc(in->nTuples * sizeof(char *)); // Will contain the content of the different leaves
     int minLength = 0;
-    
-    
+
+
     // We store the content of the different tuples
     for (i = 0; i < in->nTuples; i++) {
         data[i] = TextDatumGetCString(in->datums[i]);
@@ -1191,7 +1191,7 @@ Datum kmer_picksplit(PG_FUNCTION_ARGS) {
 
     // We find the size of the smallest size of the different tuples
     // Because the prefix of the inner node will never have a size greater than the size of the smallest tuple
-    
+
     for (i = 1; i < in->nTuples; i++) {
         int len = strlen(data[i]);
         if (len < minLength) {
@@ -1199,7 +1199,7 @@ Datum kmer_picksplit(PG_FUNCTION_ARGS) {
         }
     }
 
-    
+
     for ( i = 1; i < in->nTuples; i++) {
         prefix = commonPrefix(prefix, data[i], minLength);
         if (strlen(prefix) == 0) { // If in the run we did not find the prefix then it's not necessary to continue
@@ -1214,13 +1214,13 @@ Datum kmer_picksplit(PG_FUNCTION_ARGS) {
     }
     else{
         out->hasPrefix = true;
-        out->prefixDatum = CStringGetTextDatum(prefix);   
+        out->prefixDatum = CStringGetTextDatum(prefix);
         out->nodeLabels = NULL;
         out->nNodes = 4; // The node will have at best 4 nodes (if the next char is A,T,C or G)
         out->mapTuplesToNodes = (int *) palloc(in->nTuples * sizeof(int));
         for (i = 0; i < in->nTuples; i++) {
             // Here, we create a classment based on the character read after the prefix for each tuple
-            
+
             char nextChar = data[i][lenPrefix]; // Character after the prefix for each tuple, the prefix itself should not be of the size of 32, so this operation is safe
 
             switch (nextChar) {
@@ -1242,9 +1242,9 @@ Datum inner_consistent(PG_FUNCTION_ARGS) {
     spgInnerConsistentIn *in = (spgInnerConsistentIn *) PG_GETARG_POINTER(0);
     spgInnerConsistentOut *out = (spgInnerConsistentOut *) PG_GETARG_POINTER(1);
 
-    out->nNodes = 0; 
+    out->nNodes = 0;
     out->nodeNumbers = palloc(in->nNodes * sizeof(int)); // I give huge space for the worst case
-    
+
     for (int i = 0; i < in->nNodes; i++) {
       char *label = TextDatumGetCString(in->nodeLabels[i]);
       for (int j = 0; j < in->nkeys; j++ ){
@@ -1267,9 +1267,9 @@ leaf_consistent(PG_FUNCTION_ARGS)
     spgLeafConsistentOut *out = (spgLeafConsistentOut *) PG_GETARG_POINTER(1);
     bool result = true;
 
-    out->recheck = false;         
-    out->recheckDistances = false; 
-    out->distances = NULL;         
+    out->recheck = false;
+    out->recheckDistances = false;
+    out->distances = NULL;
 
     char *leafValue = TextDatumGetCString(in->leafDatum);
 

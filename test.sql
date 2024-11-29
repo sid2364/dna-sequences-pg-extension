@@ -40,6 +40,8 @@ SELECT pg_column_size(dna('ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGA
 ------------------
 --             24
 
+SELECT length(dna('ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG'));
+
 
 SELECT generate_kmers('ATCGTAGCGT', 3); -- Should return 8 kmers / non-uniques!
 -- Above is the same as SELECT generate_kmers(dna('ATCGTAGCGT'), 3);
@@ -81,7 +83,14 @@ SELECT equals(qkmer('KRYBDHVN'), qkmer('KRYBDHVN'));
 -- t
 --(1 row)
 
-SELECT k.kmer FROM generate_kmers('ACGTACGCACGT', 6) AS k(kmer) WHERE 'DNMSRN' @> k.kmer ;
+--SELECT k.kmer FROM generate_kmers('ACGTACGCACGT', 6) AS k(kmer) WHERE 'DNMSRN' @> k.kmer ;
+-- FIXME: Operator is not unique
+--psql:test.sql:84: ERROR:  operator is not unique: unknown @> text
+--LINE 1: ...mers('ACGTACGCACGT', 6) AS k(kmer) WHERE 'DNMSRN' @> k.kmer ...
+--                                                             ^
+--HINT:  Could not choose a best candidate operator. You might need to add explicit type casts.
+
+SELECT k.kmer FROM generate_kmers('ACGTACGCACGT', 6) AS k(kmer) WHERE contains('DNMSRN', k.kmer) ;
 --  kmer
 ----------
 -- GTACGC
@@ -115,17 +124,40 @@ FROM kmers;
 --          10 |              5 |            1
 --(1 row)
 
--- Just creating a table with some test data
--- CREATE TABLE k AS SELECT kmer FROM generate_kmers('ACGTACGTACGT', 6) AS k(kmer);
+-- Create a table we can store DNA sequences in
 DROP TABLE IF EXISTS dna_sequences;
 CREATE TABLE dna_sequences (
     id SERIAL PRIMARY KEY,
     sequence dna
 );
+
+COPY dna_sequences (sequence)
+FROM '/tmp/random_nucleotides.txt'
+WITH (FORMAT text);
+
+SELECT id, length(sequence) AS length, pg_column_size(sequence) AS size FROM dna_sequences;
+--id | length  |  size
+------+---------+--------
+--  1 | 1000000 | 250012
+--(1 row)
+
+
+--- Now count kmers on the massive table
+WITH kmers AS (
+    SELECT k.kmer, COUNT(*) AS count
+    FROM dna_sequences d,
+         LATERAL generate_kmers(d.sequence, 5) AS k(kmer)
+    GROUP BY k.kmer
+)
+SELECT
+    SUM(count) AS total_count,
+    COUNT(*) AS distinct_count,
+    COUNT(*) FILTER (WHERE count = 1) AS unique_count
+FROM kmers;
+-- total_count | distinct_count | unique_count
+---------------+----------------+--------------
+--      999996 |           1024 |            0
+--(1 row)
 --
---COPY dna_sequences(sequence)
---FROM '/home/sid/Study/sra-data/random_nucleotides.txt'
---WITH (FORMAT text);
---\copy dna_sequences(sequence) FROM 'random_nucleotides.txt' WITH (FORMAT text);
 
 SELECT get_oid(kmer('ATCG'));

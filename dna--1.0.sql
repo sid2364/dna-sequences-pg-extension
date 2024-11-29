@@ -28,7 +28,8 @@ CREATE TYPE dna (
   output         = dna_out,
   receive        = dna_recv,
   send           = dna_send,
-  alignment      = int
+  alignment      = int,
+  storage        = extended -- Required for passing in large strings, otherwise postgres doesn't allow more than 8kb
 );
 
 CREATE OR REPLACE FUNCTION dna(text)
@@ -86,7 +87,7 @@ CREATE OPERATOR <> (
 --Functions
 
  CREATE FUNCTION length(dna)
-  RETURNS int 
+  RETURNS bigint
   AS 'MODULE_PATHNAME', 'length'
   LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
