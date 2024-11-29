@@ -124,8 +124,7 @@ FROM kmers;
 --          10 |              5 |            1
 --(1 row)
 
--- Just creating a table with some test data
--- CREATE TABLE k AS SELECT kmer FROM generate_kmers('ACGTACGTACGT', 6) AS k(kmer);
+-- Create a table we can store DNA sequences in
 DROP TABLE IF EXISTS dna_sequences;
 CREATE TABLE dna_sequences (
     id SERIAL PRIMARY KEY,
@@ -136,10 +135,12 @@ COPY dna_sequences (sequence)
 FROM '/tmp/random_nucleotides.txt'
 WITH (FORMAT text);
 
-SELECT id, pg_column_size(sequence) AS size
-FROM dna_sequences;
-
 SELECT id, length(sequence) AS length, pg_column_size(sequence) AS size FROM dna_sequences;
+--id | length  |  size
+------+---------+--------
+--  1 | 1000000 | 250012
+--(1 row)
+
 
 --- Now count kmers on the massive table
 WITH kmers AS (
@@ -153,6 +154,8 @@ SELECT
     COUNT(*) AS distinct_count,
     COUNT(*) FILTER (WHERE count = 1) AS unique_count
 FROM kmers;
-
--- test this: whenever you access dna, use VARDATA(dna) and then get use that instead of the pointer directly
--- also check PG_DETOAST_DATUM_COPY(dna)
+-- total_count | distinct_count | unique_count
+---------------+----------------+--------------
+--      999996 |           1024 |            0
+--(1 row)
+--
