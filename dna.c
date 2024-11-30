@@ -12,15 +12,19 @@
 #include "access/spgist.h"
 #include "parser/parse_type.h"
 #include "utils/lsyscache.h"
+#include "utils/pg_locale.h"
+#include "utils/datum.h"
+#include "utils/fmgrprotos.h"
+#include "mb/pg_wchar.h"
+#include "utils/sortsupport.h"
+#include "nodes/nodes.h"
+#include "nodes/makefuncs.h"
+#include "nodes/parsenodes.h"
 
 #include <math.h>
 #include <float.h>
 #include <stdlib.h>
 #include <stdint.h>
-
-#include "nodes/nodes.h"
-#include "nodes/makefuncs.h"
-#include "nodes/parsenodes.h"
 
 PG_MODULE_MAGIC;
 
@@ -97,9 +101,9 @@ https://www.postgresql.org/docs/current/spgist.html
 https://doxygen.postgresql.org/spgtextproc_8c_source.html
 */
 
-/********************************************************************************************
+/**********************************************************************************************************************
 * DNA functions
-********************************************************************************************/
+**********************************************************************************************************************/
 
 /**
  * Encoding function
@@ -380,9 +384,9 @@ dna_ne(PG_FUNCTION_ARGS)
 }
 
 
-/********************************************************************************************
+/**********************************************************************************************************************
 * Kmer functions
-********************************************************************************************/
+**********************************************************************************************************************/
 
 /**
  * Encoding function for K-mers
@@ -421,6 +425,7 @@ static uint64_t encode_kmer(const char *sequence, int length) {
  */
 static char* decode_kmer(uint64_t bit_sequence, int length) {
     // Allocate memory for the k-mer string (+1 for null terminator)
+    elog(INFO, "Length: %d", length);
     char *sequence = palloc(length + 1);
     sequence[length] = '\0';
 
@@ -495,6 +500,7 @@ static Kmer *kmer_make(const char *sequence)
        ereport(ERROR, (errmsg("Invalid K-mer sequence: must contain only A, T, C, G and be at most 32 nucleotides long")));
        return NULL;
    }
+   //elog(INFO, "Debug: Creating Kmer for sequence '%s' with length %d", sequence, length);
 
    // Encode the K-mer sequence into the 64-bit bit_sequence
    kmer->bit_sequence = encode_kmer(sequence, length);
@@ -834,9 +840,9 @@ starts_with(PG_FUNCTION_ARGS)
     PG_RETURN_BOOL(result);
 }
 
-/********************************************************************************************
+/**********************************************************************************************************************
 * Qkmer functions
-********************************************************************************************/
+**********************************************************************************************************************/
 
 /*
  * Enforces that the qkmer pattern is valid and contains only IUPAC nucleotide codes
@@ -1078,12 +1084,52 @@ contains(PG_FUNCTION_ARGS)
     PG_RETURN_BOOL(true);
 }
 
-/********************************************************************************************
+/**********************************************************************************************************************
 * SP-GiST functions
-********************************************************************************************/
+**********************************************************************************************************************/
+
+ /*
+ Struct for sorting values in picksplit
+
+ Taken from https://doxygen.postgresql.org/spgtextproc_8c_source.html
+ */
+typedef struct spgNodePtr
+ {
+     Datum       d;
+     int         i;
+     int16       c;
+ } spgNodePtr;
+
+typedef struct {
+        char nextChar;
+        int originalIndex;
+        Datum originalDatum;
+    } KmerNode;
+
+/*
+Find the length of the common prefix of a and b
+
+Taken from https://doxygen.postgresql.org/spgtextproc_8c_source.html
+*/
+ static int
+ commonPrefix(const char *a, const char *b, int lena, int lenb)
+ {
+     int         i = 0;
+
+     while (i < lena && i < lenb && *a == *b)
+     {
+         a++;
+         b++;
+         i++;
+     }
+
+     return i;
+ }
 
 /*
  A function to test and get the Oid of the Postgres type kmer
+
+ Required for SP-GiST implementation (and is called from Sql)
 */
 PG_FUNCTION_INFO_V1(get_oid);
 Datum
@@ -1092,7 +1138,40 @@ get_oid(PG_FUNCTION_ARGS){
     PG_RETURN_INT32(int4_oid);
 }
 
+static int cmpKmerNode(const void *a, const void *b)
+{
+    KmerNode *nodeA = (KmerNode *) a;
+    KmerNode *nodeB = (KmerNode *) b;
+    return (int) (nodeA->nextChar - nodeB->nextChar);
+}
+
 /*
+This function is used to find the common prefix between two strings
+*/
+//char* commonPrefix(char* str1, char* str2, int minLength) {
+//    static char prefix[33]; // We already know that the size of a kmer is 32, we add one more place so that we can put the '\0' symbol at the end of it
+//    int i = 0;
+//    while (str1[i] == str2[i] && i < minLength) {
+//        prefix[i] = str1[i];
+//        i++;
+//    }
+//    prefix[i] = '\0';
+//    return prefix;
+//}
+
+/*
+Modelled from https://doxygen.postgresql.org/spgtextproc_8c_source.html
+*/
+static int cmpNodePtr(const void *a, const void *b)
+{
+    const spgNodePtr *aa = (const spgNodePtr *) a;
+    const spgNodePtr *bb = (const spgNodePtr *) b;
+
+    return (int) (aa->c - bb->c);
+}
+
+/*
+
 Returns static information about the index implementation, including the data type OIDs of the prefix and node label data types
 */
 PG_FUNCTION_INFO_V1(spgist_kmer_config);
@@ -1103,14 +1182,14 @@ spgist_kmer_config(PG_FUNCTION_ARGS)
     spgConfigOut *cfgout = (spgConfigOut *) PG_GETARG_POINTER(1);
 
     Oid KMEROID = typenameTypeId(NULL, makeTypeName("kmer"));
+    elog(INFO, "Debug: Retrieved KMEROID = %u", KMEROID);
 
     cfgout->prefixType = KMEROID;
     cfgout->leafType = KMEROID;
     cfgout->labelType = VOIDOID;
 
-
     cfgout->canReturnData = true; // A node may contain already the value that we want without it being a leaf
-    cfgout->longValuesOK = false;   // ¯\_(ツ)_/¯
+    cfgout->longValuesOK = true;   // ¯\_(ツ)_/¯ (change back to false later)
 
     PG_RETURN_VOID();
 }
@@ -1120,136 +1199,589 @@ This function decides how to explore the tree when we have the spgChooseIn objec
 
 Determines which child node an inserted value should go to, or signals the creation of a new child node if none make sense
 */
-PG_FUNCTION_INFO_V1(spgist_dna_choose);
-Datum
-spgist_dna_choose(PG_FUNCTION_ARGS)
-{
-    spgChooseIn  *in  = (spgChooseIn *) PG_GETARG_POINTER(0);
-    spgChooseOut *out = (spgChooseOut *) PG_GETARG_POINTER(1);
+//PG_FUNCTION_INFO_V1(spgist_dna_choose);
+//Datum
+//spgist_dna_choose(PG_FUNCTION_ARGS)
+//{
+//    spgChooseIn  *in  = (spgChooseIn *) PG_GETARG_POINTER(0);
+//    spgChooseOut *out = (spgChooseOut *) PG_GETARG_POINTER(1);
+//
+//    Kmer *datum = (Kmer *) DatumGetPointer(in->datum); // Get the Kmer value to index
+//    char *datum_str = kmer_to_str(datum); // Convert Kmer to string for easier comparison
+//    elog(INFO, "Debug: Indexing kmer: %s", datum_str);
+//
+//    char *prefix = NULL; // The prefix or text contained in the node (for now)
+//    if (in->hasPrefix) {
+//        Kmer *prefix_kmer = (Kmer *) DatumGetPointer(in->prefixDatum);
+//        prefix = kmer_to_str(prefix_kmer);
+//        elog(INFO, "Debug: Node prefix: %s", prefix);
+//    }
+//
+//    char *restDatum = datum_str; // Initialize restDatum with the full datum_str
+//    // If there is a prefix, check if the datum_str starts with it
+//    if (prefix != NULL) {
+//        size_t prefix_len = strlen(prefix);
+//        if (strncmp(datum_str, prefix, prefix_len) == 0) {
+//            // restDatum is the part of the datum_str after the prefix
+//            restDatum = datum_str + prefix_len;
+//        } else {
+//            // Prefix does not match, need to add a new node
+//            elog(INFO, "Debug: Prefix mismatch. Adding new node.");
+//            out->resultType = spgAddNode;
+//            out->result.addNode.nodeLabel = CStringGetTextDatum(restDatum); // The entire restDatum
+//            out->result.addNode.nodeN = in->nNodes; // New node index
+//            PG_RETURN_VOID(); // Et voila!
+//        }
+//    }
+//
+//    // If restDatum is empty, we've reached a leaf node
+//    if (*restDatum == '\0') {
+//        elog(INFO, "Debug: Reached a leaf node.");
+//        out->resultType = spgMatchNode; // We have a match!
+//        PG_RETURN_VOID();
+//    }
+//
+//    // Get the next character after the prefix
+//    char nextChar[2]; // It's 2 because we need to store the restDatum[0] and the '\0' character
+//    elog(INFO, "Debug: Next character after prefix: %s", nextChar);
+//
+//    nextChar[0] = *restDatum;
+//    nextChar[1] = '\0';
+//
+//    int i;
+//    bool matchFound = false;
+//
+//    // Search for a child node that matches the next character
+//    for (i = 0; i < in->nNodes; i++) {
+//        char *nodeLabel = TextDatumGetCString(in->nodeLabels[i]);
+//        if (strcmp(nodeLabel, nextChar) == 0) {
+//            // Found a matching child node
+//            elog(INFO, "Debug: Found matching child node for %s", nextChar);
+//
+//            out->resultType = spgMatchNode; // We have a match!
+//            out->result.matchNode.nodeN = i; // Node index
+//            out->result.matchNode.levelAdd = 1;
+//            out->result.matchNode.restDatum = CStringGetTextDatum(restDatum + 1); // Skip the already matched character
+//            matchFound = true;
+//            break;
+//        }
+//    }
+//
+//    if (!matchFound) { // Should be always False if we reach this point, but let's be explicit
+//        // No matching child node, need to add a new node
+//        elog(INFO, "Debug: No matching node found. Adding new node.");
+//
+//        out->resultType = spgAddNode;
+//        out->result.addNode.nodeLabel = CStringGetTextDatum(nextChar); // We try to add the rest of the entire datum since we did not find any corresponding prefix
+//        out->result.addNode.nodeN = in->nNodes; // Found that this needs to be set to the number of nodes + 1!
+//    }
+//    elog(INFO, "Debug: Returning from spgist_dna_choose");
+//
+//    PG_RETURN_VOID();
+//}
 
-    char *datum = TextDatumGetCString(in->datum); // It represents the value to index, it is not the same as the prefix of the node
+ static bool
+ searchChar(Datum *nodeLabels, int nNodes, int16 c, int *i)
+ {
+     int         StopLow = 0,
+                 StopHigh = nNodes;
 
-    char *prefix = NULL; // The prefix or text contained in the node.
+     while (StopLow < StopHigh)
+     {
+         int         StopMiddle = (StopLow + StopHigh) >> 1;
+         int16       middle = DatumGetInt16(nodeLabels[StopMiddle]);
 
-    if (prefix && strncmp(datum, prefix, strlen(prefix)) == 0) { // This condition is true if the n first letters of the datum correspond to
-        char *restDatum = datum + strlen(prefix);
+         if (c < middle)
+             StopHigh = StopMiddle;
+         else if (c > middle)
+             StopLow = StopMiddle + 1;
+         else
+         {
+             *i = StopMiddle;
+             return true;
+         }
+     }
 
-        int i;
-        bool matchFound = false;
+     *i = StopHigh;
+     return false;
+ }
 
-        for (i = 0; i < in->nNodes; i++) { // We look for the correct node child to explore
-            if (DatumGetPointer(in->nodeLabels[i]) != NULL) {
-                char *nodeLabel = TextDatumGetCString(in->nodeLabels[i]);
+ Datum
+ spg_kmer_choose(PG_FUNCTION_ARGS)
+ {
+     spgChooseIn *in = (spgChooseIn *) PG_GETARG_POINTER(0);
+     spgChooseOut *out = (spgChooseOut *) PG_GETARG_POINTER(1);
+     Kmer       *inText = DatumGetKmerP(in->datum);
+     char       *inStr = VARDATA_ANY(inText);
+     int         inSize = VARSIZE_ANY_EXHDR(inText);
+     char       *prefixStr = NULL;
+     int         prefixSize = 0;
+     int         commonLen = 0;
+     int16       nodeChar = 0;
+     int         i = 0;
 
-                if (strncmp(restDatum, nodeLabel, strlen(nodeLabel)) == 0) { // We compare again our current value with the value of the node childs
-                    out->resultType = spgMatchNode;
-                    out->result.matchNode.nodeN = i;  // We go to the ith node child and, by logic, this should be the only one to get a match
-                    out->result.matchNode.levelAdd = 1;
+     /* Check for prefix match, set nodeChar to first byte after prefix */
+     if (in->hasPrefix)
+     {
+         text       *prefixText = DatumGetTextPP(in->prefixDatum);
 
-                    out->result.matchNode.restDatum = CStringGetTextDatum(restDatum + strlen(nodeLabel));
-                    matchFound = true;
-                    break;
-                }
-            }
-        }
-        if (!matchFound) {
-            out->resultType = spgAddNode;
-            out->result.addNode.nodeLabel = CStringGetTextDatum(restDatum); // We try to add the rest of the datum that did not encounter a prefix
-            out->result.addNode.nodeN = in->nNodes;
-        }
-    }
-    else
-    {
-        out->resultType = spgAddNode;
-        out->result.addNode.nodeLabel = CStringGetTextDatum(datum); // We try to add the rest of the entire datum since we did not find any corresponding prefix
-        out->result.addNode.nodeN = in->nNodes;
-    }
+         prefixStr = VARDATA_ANY(prefixText);
+         prefixSize = VARSIZE_ANY_EXHDR(prefixText);
 
-    PG_RETURN_VOID();
-}
+         commonLen = commonPrefix(inStr + in->level,
+                                  prefixStr,
+                                  inSize - in->level,
+                                  prefixSize);
 
-char* commonPrefix(char* str1, char* str2, int minLength);
+         if (commonLen == prefixSize)
+         {
+             if (inSize - in->level > commonLen)
+                 nodeChar = *(unsigned char *) (inStr + in->level + commonLen);
+             else
+                 nodeChar = -1;
+         }
+         else
+         {
+             /* Must split tuple because incoming value doesn't match prefix */
+             out->resultType = spgSplitTuple;
 
-/*
-This function is used to find the common prefix between two strings
-*/
-char* commonPrefix(char* str1, char* str2, int minLength) {
-    static char prefix[33]; // We already know that the size of a kmer is 32, we add one more place so that we can put the '\0' symbol at the end of it
-    int i = 0;
-    while (str1[i] == str2[i] && i < minLength) {
-        prefix[i] = str1[i];
-        i++;
-    }
-    prefix[i] = '\0';
-    return prefix;
-}
+             if (commonLen == 0)
+             {
+                 out->result.splitTuple.prefixHasPrefix = false;
+             }
+             else
+             {
+                 out->result.splitTuple.prefixHasPrefix = true;
+                 out->result.splitTuple.prefixPrefixDatum =
+                     formTextDatum(prefixStr, commonLen);
+             }
+             out->result.splitTuple.prefixNNodes = 1;
+             out->result.splitTuple.prefixNodeLabels =
+                 (Datum *) palloc(sizeof(Datum));
+             out->result.splitTuple.prefixNodeLabels[0] =
+                 Int16GetDatum(*(unsigned char *) (prefixStr + commonLen));
+
+             out->result.splitTuple.childNodeN = 0;
+
+             if (prefixSize - commonLen == 1)
+             {
+                 out->result.splitTuple.postfixHasPrefix = false;
+             }
+             else
+             {
+                 out->result.splitTuple.postfixHasPrefix = true;
+                 out->result.splitTuple.postfixPrefixDatum =
+                     formTextDatum(prefixStr + commonLen + 1,
+                                   prefixSize - commonLen - 1);
+             }
+
+             PG_RETURN_VOID();
+         }
+     }
+     else if (inSize > in->level)
+     {
+         nodeChar = *(unsigned char *) (inStr + in->level);
+     }
+     else
+     {
+         nodeChar = -1;
+     }
+
+     /* Look up nodeChar in the node label array */
+     if (searchChar(in->nodeLabels, in->nNodes, nodeChar, &i))
+     {
+         /*
+          * Descend to existing node.  (If in->allTheSame, the core code will
+          * ignore our nodeN specification here, but that's OK.  We still have
+          * to provide the correct levelAdd and restDatum values, and those are
+          * the same regardless of which node gets chosen by core.)
+          */
+         int         levelAdd;
+
+         out->resultType = spgMatchNode;
+         out->result.matchNode.nodeN = i;
+         levelAdd = commonLen;
+         if (nodeChar >= 0)
+             levelAdd++;
+         out->result.matchNode.levelAdd = levelAdd;
+         if (inSize - in->level - levelAdd > 0)
+             out->result.matchNode.restDatum =
+                 formTextDatum(inStr + in->level + levelAdd,
+                               inSize - in->level - levelAdd);
+         else
+             out->result.matchNode.restDatum =
+                 formTextDatum(NULL, 0);
+     }
+     else if (in->allTheSame)
+     {
+         /*
+          * Can't use AddNode action, so split the tuple.  The upper tuple has
+          * the same prefix as before and uses a dummy node label -2 for the
+          * lower tuple.  The lower tuple has no prefix and the same node
+          * labels as the original tuple.
+          *
+          * Note: it might seem tempting to shorten the upper tuple's prefix,
+          * if it has one, then use its last byte as label for the lower tuple.
+          * But that doesn't win since we know the incoming value matches the
+          * whole prefix: we'd just end up splitting the lower tuple again.
+          */
+         out->resultType = spgSplitTuple;
+         out->result.splitTuple.prefixHasPrefix = in->hasPrefix;
+         out->result.splitTuple.prefixPrefixDatum = in->prefixDatum;
+         out->result.splitTuple.prefixNNodes = 1;
+         out->result.splitTuple.prefixNodeLabels = (Datum *) palloc(sizeof(Datum));
+         out->result.splitTuple.prefixNodeLabels[0] = Int16GetDatum(-2);
+         out->result.splitTuple.childNodeN = 0;
+         out->result.splitTuple.postfixHasPrefix = false;
+     }
+     else
+     {
+         /* Add a node for the not-previously-seen nodeChar value */
+         out->resultType = spgAddNode;
+         out->result.addNode.nodeLabel = Int16GetDatum(nodeChar);
+         out->result.addNode.nodeN = i;
+     }
+
+     PG_RETURN_VOID();
+ }
+
+//
+//PG_FUNCTION_INFO_V1(spgist_dna_choose);
+//Datum
+//spgist_dna_choose(PG_FUNCTION_ARGS)
+//{
+//    spgChooseIn  *in  = (spgChooseIn *) PG_GETARG_POINTER(0);
+//    spgChooseOut *out = (spgChooseOut *) PG_GETARG_POINTER(1);
+//
+//    // Decode the incoming k-mer using kmer_make
+//    Kmer *datum = (Kmer *) DatumGetPointer(in->datum);
+//    char *datum_str = kmer_to_str(datum);
+//    elog(INFO, "Debug: Indexing kmer: %s", datum_str);
+//
+//    Kmer *prefix_kmer = NULL;
+//    char *prefix_str = NULL;
+//    if (in->hasPrefix) {
+//        prefix_kmer = (Kmer *) DatumGetPointer(in->prefixDatum);
+//        prefix_str = kmer_to_str(prefix_kmer);
+//        elog(INFO, "Debug: Node prefix: %s", prefix_str);
+//    }
+//
+//    // Determine the "rest" of the k-mer after the prefix
+//    const char *restDatum = datum_str;
+//    if (prefix_str != NULL) {
+//        size_t prefix_len = strlen(prefix_str);
+//        elog(INFO, "Debug: Prefix length: %zu", prefix_len);
+//
+//        if (strncmp(datum_str, prefix_str, prefix_len) == 0) {
+//            // If the prefix matches, restDatum is the remainder
+//            restDatum = datum_str + prefix_len;
+//            elog(INFO, "Debug: Rest of datum after prefix: %s", restDatum);
+//        } else {
+//            // Prefix mismatch: split the node
+//            elog(INFO, "Debug: Prefix mismatch. Splitting node.");
+//            out->resultType = spgSplitTuple;
+//
+//            // Set the new prefix for the split node
+//            if (prefix_len > 0) {
+//                out->result.splitTuple.prefixHasPrefix = true;
+//                out->result.splitTuple.prefixPrefixDatum = PointerGetDatum(kmer_make(prefix_str));
+//            } else {
+//                out->result.splitTuple.prefixHasPrefix = false;
+//            }
+//
+//            // Set child node label to the first non-matching character
+//            out->result.splitTuple.prefixNNodes = 1;
+//            char split_label = datum_str[prefix_len];
+//            out->result.splitTuple.prefixNodeLabels = (Datum *) palloc(sizeof(Datum));
+//            out->result.splitTuple.prefixNodeLabels[0] = PointerGetDatum(kmer_make(&split_label));
+//
+//            // Handle the "postfix" part of the split node
+//            if (strlen(prefix_str) > prefix_len + 1) {
+//                out->result.splitTuple.postfixHasPrefix = true;
+//                out->result.splitTuple.postfixPrefixDatum = PointerGetDatum(kmer_make(prefix_str + prefix_len + 1));
+//            } else {
+//                out->result.splitTuple.postfixHasPrefix = false;
+//            }
+//
+//            out->result.splitTuple.childNodeN = 0;
+//            PG_RETURN_VOID();
+//        }
+//    }
+//
+//    // If the rest of the k-mer is empty, we've reached a leaf node
+//    if (*restDatum == '\0') {
+//        elog(INFO, "Debug: Reached a leaf node.");
+//        out->resultType = spgMatchNode;
+//        PG_RETURN_VOID();
+//    }
+//
+//    // Determine the next character in the "rest" of the k-mer
+//    char nextChar[2] = {*restDatum, '\0'};
+//    elog(INFO, "Debug: Next character after prefix: %s", nextChar);
+//
+//    // Search for a child node matching the next character
+//    int i;
+//    bool matchFound = false;
+//    for (i = 0; i < in->nNodes; i++) {
+//        elog(INFO, "Debug: Comparing node label %d", i);
+//
+//        // Log the raw value of in->nodeLabels
+//        elog(INFO, "Debug: Raw in->nodeLabels[%d] = %p", i, in->nodeLabels[i]);
+//
+//        // Validate that the nodeLabel is not null or invalid before dereferencing
+//        if (in->nodeLabels[i] == 0) {
+//            elog(ERROR, "Debug: Null node label encountered at index %d", i);
+//            continue;
+//        }
+//
+//        Kmer *nodeKmer = (Kmer *) DatumGetPointer(in->nodeLabels[i]);
+//        elog(INFO, "Debug: Node label (as Kmer): %p", nodeKmer);
+//        //elog(INFO, "Debug: Node label (as string): %s", kmer_to_str(nodeKmer));
+//        if (nodeKmer == NULL) {
+//            elog(ERROR, "Debug: Invalid Kmer pointer for node label at index %d", i);
+//            continue;
+//        }
+//        elog(INFO, "Debug: Node label length: %d", nodeKmer->length);
+//        if (nodeKmer->length < 0 || nodeKmer->length > 32) {
+//            elog(INFO, "Debug: Invalid Kmer length %d at index %d. Skipping node.",
+//                 nodeKmer->length, i);
+//            continue;
+//        }
+//
+//        // Use kmer_to_str safely to convert the Kmer to a string
+//        char *nodeLabelStr = kmer_to_str(nodeKmer);
+//        if (nodeLabelStr == NULL) {
+//            elog(ERROR, "Debug: Failed to convert Kmer to string at index %d", i);
+//            continue;
+//        }
+//
+//        // Log the converted node label
+//        elog(INFO, "Debug: Node label (as string): %s", nodeLabelStr);
+//
+//        if (strcmp(nodeLabelStr, nextChar) == 0) {
+//            matchFound = true;
+//            break;
+//        }
+//    }
+//
+//    if (matchFound) {
+//        // Found a matching child node
+//        elog(INFO, "Debug: Found matching child node for %s", nextChar);
+//        out->resultType = spgMatchNode;
+//        out->result.matchNode.nodeN = i;
+//        out->result.matchNode.levelAdd = 1;
+//        out->result.matchNode.restDatum = PointerGetDatum(kmer_make(restDatum + 1));
+//    } else {
+//        // No matching child node: add a new node
+//        elog(INFO, "Debug: No matching node found. Adding new node for %s", nextChar);
+//        out->resultType = spgAddNode;
+//        out->result.addNode.nodeLabel = PointerGetDatum(kmer_make(nextChar));
+//        out->result.addNode.nodeN = in->nNodes; // New node index
+//    }
+//
+//    PG_RETURN_VOID();
+//}
 
 /*
 Decides how to create a new inner tuple over a set of leaf tuples.
 
 Partitions a set of input values into subsets for new child nodes and assigns prefixes and labels for the inner node
 */
+//PG_FUNCTION_INFO_V1(kmer_picksplit);
+//Datum kmer_picksplit(PG_FUNCTION_ARGS) {
+//    spgPickSplitIn *in = (spgPickSplitIn *) PG_GETARG_POINTER(0);
+//    spgPickSplitOut *out = (spgPickSplitOut *) PG_GETARG_POINTER(1);
+//
+//    int i;
+//    Kmer **data = (Kmer **) palloc(in->nTuples * sizeof(Kmer *)); // Will contain the content of the different leaves
+//    char **kmer_strings = (char **) palloc(in->nTuples * sizeof(char *)); // Will contain the string representation (!) of the different leaves
+//    int minLength = INT_MAX; // Needs to be large enough to be replaced by the first value :) Could also be 33, but let's be dramatic
+//
+//    elog(INFO, "Debug: Number of tuples: %d", in->nTuples);
+//
+//    // We store the content of the different tuples
+//    for (i = 0; i < in->nTuples; i++) {
+//        data[i] = (Kmer *) DatumGetPointer(in->datums[i]);
+//        kmer_strings[i] = kmer_to_str(data[i]);
+//        elog(INFO, "Debug: Leaf tuple %d: %s", i, kmer_strings[i]);
+//
+//        // We find the size of the smallest size of the different tuples
+//        // Because the prefix of the inner node will never have a size greater than the size of the smallest tuple
+//        int len = strlen(kmer_strings[i]);
+//        if (len < minLength) {
+//            minLength = len;
+//        }
+//    }
+//
+//    // Find the common prefix with kmer_strings[]; reinventing the wheel a bit since we already have commonPrefix()
+//    char *prefix = pstrdup(kmer_strings[0]);
+//    prefix[minLength] = '\0'; // Ensure prefix is not longer than the shortest string
+//
+//    for (i = 1; i < in->nTuples; i++) {
+//        int j = 0;
+//        while (j < minLength && prefix[j] == kmer_strings[i][j]) {
+//            j++;
+//        }
+//        prefix[j] = '\0';
+//        minLength = j;
+//        if (minLength == 0) {
+//            elog(INFO, "Debug: No common prefix found for this tuple with value %s at index %d", kmer_strings[i], i);
+//            elog(INFO, "Debug: Prefix is %s", prefix); // This will be a NULL string
+//            break;
+//        }
+//    }
+//
+//    if (minLength == 0) {
+//        // No common prefix
+//        out->hasPrefix = false;
+//        out->prefixDatum = (Datum) 0;
+//        // Debug: Print all tuples to understand why no common prefix was found
+//        elog(INFO, "Debug: No common prefix found for %d tuples. Tuples are:", in->nTuples);
+//    } else {
+//        out->hasPrefix = true;
+//        out->prefixDatum = CStringGetTextDatum(prefix);
+//        elog(INFO, "Debug: Common prefix: %s", prefix);
+//    }
+//
+//    // Collect unique next characters after the prefix
+//    char *nextChars = (char *) palloc(in->nTuples * sizeof(char));
+//    int nUniqueChars = 0;
+//    char *uniqueChars = (char *) palloc(256 * sizeof(char)); // Max 4 unique characters (TODO change this back to 4 later)
+//    int charToNodeIndex[256]; // Mapping from character to node index
+//
+//    memset(charToNodeIndex, -1, sizeof(charToNodeIndex)); // Initialize to -1 so we can check if a character has been seen before
+//
+//    for (i = 0; i < in->nTuples; i++) {
+//        char nextChar = (kmer_strings[i][minLength] == '\0') ? '\0' : kmer_strings[i][minLength];
+//
+//        if (charToNodeIndex[(unsigned char)nextChar] == -1) {
+//            // New unique character found
+//            if (nUniqueChars >= 4) {
+//                elog(ERROR, "Too many unique characters for nodes.");
+//            }
+//            uniqueChars[nUniqueChars] = nextChar;
+//            charToNodeIndex[(unsigned char)nextChar] = nUniqueChars;
+//            nUniqueChars++;
+//        }
+//        nextChars[i] = nextChar;
+//    }
+//
+//    out->nNodes = nUniqueChars;
+//    elog(INFO, "Debug: Number of child nodes: %d", nUniqueChars);
+//
+//    out->nodeLabels = (Datum *) palloc(nUniqueChars * sizeof(Datum));
+//    for (i = 0; i < nUniqueChars; i++) {
+//        char label[2] = { uniqueChars[i], '\0' }; // Explicit af
+//        out->nodeLabels[i] = CStringGetTextDatum(label);
+//        elog(INFO, "Debug: Node label: %s", label);
+//    }
+//
+//    // Map tuples to nodes
+//    out->mapTuplesToNodes = (int *) palloc(in->nTuples * sizeof(int));
+//    for (i = 0; i < in->nTuples; i++) {
+//        char nextChar = nextChars[i];
+//        elog(INFO, "Debug: Tuple %d next char: %c", i, nextChar);
+//        int nodeIndex = charToNodeIndex[(unsigned char) nextChar];
+//        elog(INFO, "Debug: Node index: %d", nodeIndex);
+//        if (nodeIndex == -1) {
+//            elog(ERROR, "Unexpected error mapping tuple %d to node.", i);
+//        }
+//        out->mapTuplesToNodes[i] = nodeIndex;
+//        elog(INFO, "Debug: Tuple %d mapped to node %d", i, nodeIndex);
+//    }
+//
+//    // Clean up allocated memory
+//    pfree(uniqueChars);
+//    pfree(nextChars);
+//    pfree(data);
+//    pfree(kmer_strings);
+//
+//    PG_RETURN_VOID();
+//}
 PG_FUNCTION_INFO_V1(kmer_picksplit);
-Datum kmer_picksplit(PG_FUNCTION_ARGS) {
-    int i = 0;
+Datum
+kmer_picksplit(PG_FUNCTION_ARGS)
+{
     spgPickSplitIn *in = (spgPickSplitIn *) PG_GETARG_POINTER(0);
     spgPickSplitOut *out = (spgPickSplitOut *) PG_GETARG_POINTER(1);
-    out->hasPrefix = true;
-    char **data = (char **) palloc(in->nTuples * sizeof(char *)); // Will contain the content of the different leaves
-    int minLength = 0;
 
-    // We store the content of the different tuples
+    elog(INFO, "Debug: Number of tuples: %d", in->nTuples);
+
+    // Extract Kmer pointers
+    Kmer **data = (Kmer **) palloc(in->nTuples * sizeof(Kmer *));
+    char **kmer_strings = (char **) palloc(in->nTuples * sizeof(char *));
+
+    elog(INFO, "Debug: Number of tuples: %d", in->nTuples);
+
+    // Decode k-mers into strings
+    int i, minLength = INT_MAX;
     for (i = 0; i < in->nTuples; i++) {
-        data[i] = TextDatumGetCString(in->datums[i]);
-    }
-    char* prefix = data[0]; // The start of our prefix finder !
-
-    // We find the size of the smallest size of the different tuples
-    // Because the prefix of the inner node will never have a size greater than the size of the smallest tuple
-
-    for (i = 1; i < in->nTuples; i++) {
-        int len = strlen(data[i]);
+        data[i] = (Kmer *) DatumGetPointer(in->datums[i]);
+        kmer_strings[i] = kmer_to_str(data[i]);
+        int len = strlen(kmer_strings[i]);
         if (len < minLength) {
             minLength = len;
         }
     }
 
-    for ( i = 1; i < in->nTuples; i++) {
-        prefix = commonPrefix(prefix, data[i], minLength);
-        if (strlen(prefix) == 0) { // If in the run we did not find the prefix then it's not necessary to continue
-            break;
+    // Find the longest common prefix
+    int commonLen = minLength;
+    for (i = 1; i < in->nTuples && commonLen > 0; i++) {
+        int tmp = commonPrefix(kmer_strings[0], kmer_strings[i], strlen(kmer_strings[0]), strlen(kmer_strings[i]));
+        if (tmp < commonLen) {
+            commonLen = tmp;
         }
     }
 
-    int lenPrefix = strlen(prefix);
-    if (lenPrefix == 0) { // If no prefix exist, we do not create an inner node (?)
-            out->hasPrefix = false;
-            out->prefixDatum = (Datum) 0;
-    }
-    else{
+    // Set the prefix
+    if (commonLen > 0) {
         out->hasPrefix = true;
-        out->prefixDatum = CStringGetTextDatum(prefix);
-        out->nodeLabels = NULL;
-        out->nNodes = 4; // The node will have at best 4 nodes (if the next char is A,T,C or G)
-        out->mapTuplesToNodes = (int *) palloc(in->nTuples * sizeof(int));
-        for (i = 0; i < in->nTuples; i++) {
-            // Here, we create a classment based on the character read after the prefix for each tuple
+        char *prefix = palloc(commonLen + 1);
+        strncpy(prefix, kmer_strings[0], commonLen);
+        prefix[commonLen] = '\0';
+        out->prefixDatum = PointerGetDatum(kmer_make(prefix));
+    } else {
+        out->hasPrefix = false;
+    }
 
-            char nextChar = data[i][lenPrefix]; // Character after the prefix for each tuple, the prefix itself should not be of the size of 32, so this operation is safe
+    // Extract node labels (next character after the prefix)
+    spgNodePtr *nodes = (spgNodePtr *) palloc(sizeof(spgNodePtr) * in->nTuples);
+    for (i = 0; i < in->nTuples; i++) {
+        if (commonLen < strlen(kmer_strings[i])) {
+            nodes[i].c = kmer_strings[i][commonLen];
+        } else {
+            nodes[i].c = '\0';
+        }
+        nodes[i].i = i;
+        nodes[i].d = in->datums[i];
+    }
 
-            switch (nextChar) {
-                case 'A': out->mapTuplesToNodes[i] = 0; break;
-                case 'C': out->mapTuplesToNodes[i] = 1; break;
-                case 'G': out->mapTuplesToNodes[i] = 2; break;
-                case 'T': out->mapTuplesToNodes[i] = 3; break;
-                default: out->mapTuplesToNodes[i] = 4; // This cannot be attained
-            }
+    // Sort nodes by label values
+    qsort(nodes, in->nTuples, sizeof(spgNodePtr), cmpNodePtr);
+
+    // Populate output
+    out->nNodes = 0;
+    out->nodeLabels = (Datum *) palloc(sizeof(Datum) * in->nTuples);
+    out->mapTuplesToNodes = (int *) palloc(sizeof(int) * in->nTuples);
+    out->leafTupleDatums = (Datum *) palloc(sizeof(Datum) * in->nTuples);
+
+    for (i = 0; i < in->nTuples; i++) {
+        if (i == 0 || nodes[i].c != nodes[i - 1].c) {
+            char label[2] = {nodes[i].c, '\0'};
+            out->nodeLabels[out->nNodes] = PointerGetDatum(kmer_make(label));
+            out->nNodes++;
         }
 
+        // Determine remaining k-mer after the prefix and the node label
+        char *remaining = kmer_strings[nodes[i].i] + commonLen + 1;
+        out->leafTupleDatums[nodes[i].i] = PointerGetDatum(kmer_make(remaining));
+        out->mapTuplesToNodes[nodes[i].i] = out->nNodes - 1;
     }
 
     PG_RETURN_VOID();
 }
+
+
 
 /*
 Returns set of nodes (branches) to follow during tree search.
@@ -1268,8 +1800,12 @@ Datum inner_consistent(PG_FUNCTION_ARGS) {
       char *label = TextDatumGetCString(in->nodeLabels[i]);
       for (int j = 0; j < in->nkeys; j++ ){
         ScanKey key =  &in->scankeys[j]; // If I am correct, the array ScanKey contains a ScanKey which can be used here
-        if ((key->sk_strategy == 1) && strncmp(TextDatumGetCString(key->sk_argument), label, strlen(label)) == 0) { // (key->sk_strategy == 1) might correspond to the "=" operation
-          out->nodeNumbers[out->nNodes] = i; // If our condition is fufilled then we add the node to explore
+        Kmer *query_kmer = (Kmer *) DatumGetPointer(key->sk_argument);
+        char *query_str = kmer_to_str(query_kmer);
+
+        if ((key->sk_strategy == BTEqualStrategyNumber) && // Strategy is the equal to operator
+                strncmp(query_str, label, strlen(label)) == 0) {
+          out->nodeNumbers[out->nNodes] = i; // If our condition is fulfilled then we add the node to explore
           out->nNodes++;
         }
       }
@@ -1292,18 +1828,18 @@ leaf_consistent(PG_FUNCTION_ARGS)
     out->recheckDistances = false;
     out->distances = NULL;
 
-    char *leafValue = TextDatumGetCString(in->leafDatum);
+    Kmer *leaf_kmer = (Kmer *) DatumGetPointer(in->leafDatum);
 
-    for (int i = 0; i < in->nkeys; i++)
-    {   // We are basically doing the same thing as in the inner_consistent function
+    for (int i = 0; i < in->nkeys; i++) {   // We are basically doing the same thing as in the inner_consistent function
         ScanKey key = &in->scankeys[i];
-        if ((key->sk_strategy == 1) && strncmp(TextDatumGetCString(key->sk_argument), leafValue, strlen(leafValue)) == 0) { // (key->sk_strategy == 1) might correspond to the "=" operation, or idk please send help
-            continue;
-        }
-        else{
-            result = false;
-            break;
-        }
+        Kmer *query_kmer = (Kmer *) DatumGetPointer(key->sk_argument);
+
+        if (key->sk_strategy == BTEqualStrategyNumber) {
+            if (!kmer_eq_internal(leaf_kmer, query_kmer)) {
+                result = false;
+                break;
+            }
+        } // TODO: If we implement comparison wo Qkmer, we might need to add cases here for that straegy
     }
 
     PG_RETURN_BOOL(result);

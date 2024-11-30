@@ -171,29 +171,29 @@ BEGIN
     );
 END $$;
 
--- Populate it
+-- Populate kmer_data_t with k-mers generated from MASSIVE sequence in dna_sequences
 DO $$
 DECLARE
     kmer_record RECORD;
 BEGIN
     FOR kmer_record IN
         SELECT k.kmer
-        FROM generate_kmers('ATCGAGTCTGTACGTAGCGCTACGGGCGATATCCGTGCGAGACGACTGACTACTGACGGCTGATG', 3) AS k(kmer)
+        FROM dna_sequences d,
+             LATERAL generate_kmers(d.sequence, 5) AS k(kmer) -- Generate k-mers of length 5
     LOOP
         INSERT INTO kmer_data_t (kmer_sequence) VALUES (kmer_record.kmer);
     END LOOP;
 END $$;
 
-
 -- First check without the index
 EXPLAIN ANALYZE
-SELECT * FROM kmer_data_t WHERE kmer_sequence = 'ATC';
+SELECT * FROM kmer_data_t WHERE kmer_sequence = 'ATCGC';
 
 -- Create the SP-GiST index
 CREATE INDEX spgist_kmer_idx
 ON kmer_data_t USING spgist (kmer_sequence spgist_kmer_ops);
-
--- Disable sequential scan and test the index
-SET enable_seqscan = OFF;
-EXPLAIN ANALYZE
-SELECT * FROM kmer_data_t WHERE kmer_sequence = 'ATC';
+--
+---- Disable sequential scan and test the index
+--SET enable_seqscan = OFF;
+--EXPLAIN ANALYZE
+--SELECT * FROM kmer_data_t WHERE kmer_sequence = 'ATCGC';
