@@ -1000,6 +1000,19 @@ qkmer_cast_from_text(PG_FUNCTION_ARGS)
 }
 
 /*
+ * Convert a Qkmer object to a text object
+ */
+PG_FUNCTION_INFO_V1(qkmer_cast_to_text);
+Datum
+qkmer_cast_to_text(PG_FUNCTION_ARGS)
+{
+    Qkmer *qkmer = PG_GETARG_QKMER_P(0);  // Get the Qkmer object
+    text *out = (text *) DirectFunctionCall1(textin,
+                    PointerGetDatum(qkmer->sequence));  // Convert the Qkmer to a string and then to text
+    PG_RETURN_TEXT_P(out);  // Return the text object
+}
+
+/*
 * Uses the output of generate_kmers to generate qkmers that match a given pattern
 *
 * List of IUPAC nucleotide codes we are using:
