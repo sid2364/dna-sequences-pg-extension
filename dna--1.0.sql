@@ -296,5 +296,6 @@ DEFAULT FOR TYPE kmer USING spgist AS
     FUNCTION 2 spgist_kmer_choose(internal, internal),
     FUNCTION 3 spgist_kmer_picksplit(internal, internal),
     FUNCTION 4 spgist_kmer_inner_consistent(internal, internal),
-    FUNCTION 5 spgist_kmer_leaf_consistent(internal, internal);
+    FUNCTION 5 spgist_kmer_leaf_consistent(internal, internal),
+    STORAGE kmer;
 

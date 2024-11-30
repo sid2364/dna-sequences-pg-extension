@@ -179,8 +179,8 @@ BEGIN
     FOR kmer_record IN
         SELECT k.kmer
         FROM dna_sequences d,
-             --LATERAL generate_kmers('ACGCTGAGCTGACGCTACGACGCTATCGCAGCGATGCTAGCGTACGATCGTCGTCGACTAGCGACGGACGGATCGTCAGCTACTCATCTCATCACATACCACAGTCACAGCTGCTACGATCGCCTCAGCCATTCAT', 5) AS k(kmer) -- Generate k-mers of length 5
-             LATERAL generate_kmers(d.sequence, 5) AS k(kmer) -- Generate k-mers of length 5
+             LATERAL generate_kmers('ACGCTGAGCTGACGCTACGACGCTATCGCAGCGATGCTAGCGTACGATCGTCGTCGACTAGCGACGGACGGATCGTCAGCTACTCATCTCATCACATACCACAGTCACAGCTGCTACGATCGCCTCAGCCATTCATACGCTGAGCTGACGCTACGACGCTATCGCAGCGATGCTAGCGTACGATCGTCGTCGACTAGCGACGGACGGATCGTCAGCTACTCATCTCATCACATACCACAGTCACAGCTGCTACGATCGCCTCAGCCATTCATACGCTGAGCTGACGCTACGACGCTATCGCAGCGATGCTAGCGTACGATCGTCGTCGACTAGCGACGGACGGATCGTCAGCTACTCATCTCATCACATACCACAGTCACAGCTGCTACGATCGCCTCAGCCATTCATACGCTGAGCTGACGCTACGACGCTATCGCAGCGATGCTAGCGTACGATCGTCGTCGACTAGCGACGGACGGATCGTCAGCTACTCATCTCATCACATACCACAGTCACAGCTGCTACGATCGCCTCAGCCATTCATACGCTGAGCTGACGCTACGACGCTATCGCAGCGATGCTAGCGTACGATCGTCGTCGACTAGCGACGGACGGATCGTCAGCTACTCATCTCATCACATACCACAGTCACAGCTGCTACGATCGCCTCAGCCATTCATACGCTGAGCTGACGCTACGACGCTATCGCAGCGATGCTAGCGTACGATCGTCGTCGACTAGCGACGGACGGATCGTCAGCTACTCATCTCATCACATACCACAGTCACAGCTGCTACGATCGCCTCAGCCATTCATACGCTGAGCTGACGCTACGACGCTATCGCAGCGATGCTAGCGTACGATCGTCGTCGACTAGCGACGGACGGATCGTCAGCTACTCATCTCATCACATACCACAGTCACAGCTGCTACGATCGCCTCAGCCATTCATACGCTGAGCTGACGCTACGACGCTATCGCAGCGATGCTAGCGTACGATCGTCGTCGACTAGCGACGGACGGATCGTCAGCTACTCATCTCATCACATACCACAGTCACAGCTGCTACGATCGCCTCAGCCATTCATACGCTGAGCTGACGCTACGACGCTATCGCAGCGATGCTAGCGTACGATCGTCGTCGACTAGCGACGGACGGATCGTCAGCTACTCATCTCATCACATACCACAGTCACAGCTGCTACGATCGCCTCAGCCATTCAT', 5) AS k(kmer) -- Generate k-mers of length 5
+             --LATERAL generate_kmers(d.sequence, 5) AS k(kmer) -- Generate k-mers of length 5
              -- TODO: Replace later with generate_kmers(d.sequence, 5)
     LOOP
         INSERT INTO kmer_data_t (kmer_sequence) VALUES (kmer_record.kmer);
@@ -188,8 +188,8 @@ BEGIN
 END $$;
 --
 
---SET client_min_messages = DEBUG1;
---SET log_min_messages = DEBUG1;
+SET client_min_messages = INFO;
+SET log_min_messages = INFO;
 
 ---- First check without the index
 EXPLAIN ANALYZE
@@ -199,8 +199,8 @@ SELECT * FROM kmer_data_t WHERE kmer_sequence = 'ATCGC';
 -- Create the SP-GiST index
 CREATE INDEX spgist_kmer_idx
 ON kmer_data_t USING spgist (kmer_sequence spgist_kmer_ops);
---
------- Disable sequential scan and test the index
+----
+-------- Disable sequential scan and test the index
 SET enable_seqscan = OFF;
 EXPLAIN ANALYZE
 SELECT * FROM kmer_data_t WHERE kmer_sequence = 'ATCGC';
@@ -208,6 +208,6 @@ SELECT * FROM kmer_data_t WHERE kmer_sequence = 'ATCGC';
 SELECT *
 FROM pg_stat_user_indexes
 WHERE indexrelname = 'spgist_kmer_idx';
--- relid  | indexrelid | schemaname |   relname   |  indexrelname   | idx_scan |         last_idx_scan         | idx_tup_read | idx_tup_fetch
-----------+------------+------------+-------------+-----------------+----------+-------------------------------+--------------+---------------
--- 485317 |     485327 | public     | kmer_data_t | spgist_kmer_idx |        1 | 2024-11-30 15:17:12.273336+01 |      2117696 |             0
+---- relid  | indexrelid | schemaname |   relname   |  indexrelname   | idx_scan |         last_idx_scan         | idx_tup_read | idx_tup_fetch
+------------+------------+------------+-------------+-----------------+----------+-------------------------------+--------------+---------------
+---- 485317 |     485327 | public     | kmer_data_t | spgist_kmer_idx |        1 | 2024-11-30 15:17:12.273336+01 |      2117696 |             0
