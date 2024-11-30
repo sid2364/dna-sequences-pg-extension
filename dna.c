@@ -64,7 +64,7 @@ typedef struct Kmer {
     // Here, we don't need vl_len_ since the max length of a kmer is 32 nucleotides, which is 64 bits!
 } Kmer;
 
-#define DatumGetKmerP(X)  ((Dna *) DatumGetPointer(X)) // We convert the datum pointer into a dna pointer
+#define DatumGetKmerP(X)  ((Kmer *) DatumGetPointer(X)) // We convert the datum pointer into a dna pointer
 #define KmerPGetDatum(X)  PointerGetDatum(X) // We covert the dna pointer into a Datum pointer
 #define PG_GETARG_KMER_P(n) DatumGetKmerP(PG_GETARG_DATUM(n)) // We get the nth argument given to a function
 #define PG_RETURN_KMER_P(x) return KmerPGetDatum(x) // ¯\_(ツ)_/¯
@@ -634,6 +634,7 @@ kmer_to_string(PG_FUNCTION_ARGS)
 {
     Kmer *kmer = (Kmer *) PG_GETARG_POINTER(0); // Get the Kmer object
     char *result = decode_kmer(kmer->bit_sequence, kmer->length);  // Decode the bit_sequence into a string
+    result[kmer->length] = '\0';  // Null-terminate the string
     PG_FREE_IF_COPY(kmer, 0);  // Free memory if the Kmer was copied
     PG_RETURN_CSTRING(result);  // Return the decoded string
 }
@@ -1186,7 +1187,7 @@ spgist_kmer_config(PG_FUNCTION_ARGS)
     spgConfigOut *cfgout = (spgConfigOut *) PG_GETARG_POINTER(1);
 
     Oid KMEROID = typenameTypeId(NULL, makeTypeName("kmer"));
-    elog(INFO, "Debug: Retrieved KMEROID = %u", KMEROID);
+    elog(INFO, "spgist_kmer_config: Retrieved KMEROID = %u", KMEROID);
 
     cfgout->prefixType = KMEROID;
     cfgout->leafType = KMEROID;
@@ -1214,6 +1215,11 @@ spgist_kmer_choose(PG_FUNCTION_ARGS)
     int prefix_length = 0;
     int common_length = 0;
     int next_char = -1;
+
+    //elog(INFO, "spgist_kmer_choose: Input sequence = %s", input_sequence);
+    //elog(INFO, "spgist_kmer_choose: Input length = %d", input_length);
+    //elog(INFO, "spgist_kmer_choose: Level = %d", in->level);
+    //elog(INFO, "spgist_kmer_choose: Has prefix = %d", in->hasPrefix);
 
     if (in->hasPrefix)
     {
@@ -1251,6 +1257,7 @@ spgist_kmer_choose(PG_FUNCTION_ARGS)
                 truncated_prefix[common_length] = '\0';
 
                 Kmer *new_prefix = kmer_make(truncated_prefix);
+                //elog(INFO, "spgist_kmer_choose: New prefix = %s", truncated_prefix);
 
                 out->result.splitTuple.prefixHasPrefix = true;
                 out->result.splitTuple.prefixPrefixDatum = FORM_KMER_DATUM(new_prefix);
@@ -1278,6 +1285,7 @@ spgist_kmer_choose(PG_FUNCTION_ARGS)
                 postfix_prefix[prefix_length - common_length - 1] = '\0';
 
                 Kmer *new_postfix = kmer_make(postfix_prefix);
+                //elog(INFO, "spgist_kmer_choose: New postfix = %s", postfix_prefix);
 
                 out->result.splitTuple.postfixHasPrefix = true;
                 out->result.splitTuple.postfixPrefixDatum = FORM_KMER_DATUM(new_postfix);
@@ -1310,6 +1318,7 @@ spgist_kmer_choose(PG_FUNCTION_ARGS)
         out->resultType = spgMatchNode;
         out->result.matchNode.nodeN = idx;
         out->result.matchNode.levelAdd = level_add;
+        //elog(INFO, "spgist_kmer_choose: Matched node %d with level add %d", idx, level_add);
 
         // Construct restDatum for the unmatched suffix
         if (input_length - in->level - level_add > 0)
@@ -1321,12 +1330,14 @@ spgist_kmer_choose(PG_FUNCTION_ARGS)
 
             Kmer *rest_kmer = kmer_make(rest_sequence);
             out->result.matchNode.restDatum = FORM_KMER_DATUM(rest_kmer);
+            //elog(INFO, "spgist_kmer_choose: Rest sequence = %s", rest_sequence);
 
             pfree(rest_sequence);
         }
         else
         {
             out->result.matchNode.restDatum = FORM_KMER_DATUM(kmer_make("")); // TODO CHECK THIS! Empty string is usually not a good idea
+            //elog(INFO, "spgist_kmer_choose: Empty rest sequence");
         }
     }
     else if (in->allTheSame)
@@ -1340,6 +1351,8 @@ spgist_kmer_choose(PG_FUNCTION_ARGS)
         out->result.splitTuple.prefixNodeLabels[0] = Int16GetDatum(-2);
         out->result.splitTuple.childNodeN = 0;
         out->result.splitTuple.postfixHasPrefix = false;
+        //elog(INFO, "spgist_kmer_choose: All the same case");
+        //elog(INFO, "spgist_kmer_choose: Prefix has prefix = %d", in->hasPrefix);
     }
     else
     {
@@ -1347,6 +1360,7 @@ spgist_kmer_choose(PG_FUNCTION_ARGS)
         out->resultType = spgAddNode;
         out->result.addNode.nodeLabel = Int16GetDatum(next_char);
         out->result.addNode.nodeN = idx;
+        //elog(INFO, "spgist_kmer_choose: Adding node %d with label %d", idx, next_char);
     }
 
     PG_RETURN_VOID();
@@ -1362,6 +1376,10 @@ spgist_kmer_picksplit(PG_FUNCTION_ARGS)
     Kmer *first_kmer = DatumGetKmerP(in->datums[0]);
     char *first_sequence = kmer_to_str(first_kmer);
     int common_length = first_kmer->length; // Start with the full length of the first Kmer
+
+    //elog(INFO, "spgist_kmer_picksplit: First sequence = %s", first_sequence);
+    //elog(INFO, "spgist_kmer_picksplit: First length = %d", common_length);
+    //elog(INFO, "spgist_kmer_picksplit: Number of tuples = %d", in->nTuples);
 
     // Find the longest common prefix
     for (int i = 1; i < in->nTuples; i++)
@@ -1383,6 +1401,7 @@ spgist_kmer_picksplit(PG_FUNCTION_ARGS)
 
     // Enforce maximum prefix length
     common_length = Min(common_length, 32);
+    elog(INFO, "spgist_kmer_picksplit: Common length = %d", common_length);
 
     // Construct the prefix if it exists
     if (common_length > 0)
@@ -1394,6 +1413,7 @@ spgist_kmer_picksplit(PG_FUNCTION_ARGS)
         Kmer *new_prefix = kmer_make(truncated_prefix);
         out->hasPrefix = true;
         out->prefixDatum = FORM_KMER_DATUM(new_prefix);
+        //elog(INFO, "spgist_kmer_picksplit: Out Prefix = %s", truncated_prefix);
 
         pfree(truncated_prefix);
     }
@@ -1408,10 +1428,10 @@ spgist_kmer_picksplit(PG_FUNCTION_ARGS)
     {
         Kmer *kmer = DatumGetKmerP(in->datums[i]);
         const char *sequence = kmer_to_str(kmer);
+        //elog(INFO, "spgist_kmer_picksplit: Considering sequence = %s", sequence);
 
         if (common_length < kmer->length)
         {
-            //nodes[i].c = (int16)sequence[common_length];
             nodes[i].c = *(unsigned char *) (sequence + common_length);
         }
         else
@@ -1432,6 +1452,8 @@ spgist_kmer_picksplit(PG_FUNCTION_ARGS)
     out->mapTuplesToNodes = palloc(sizeof(int) * in->nTuples);
     out->leafTupleDatums = palloc(sizeof(Datum) * in->nTuples);
 
+    //elog(INFO, "spgist_kmer_picksplit: Now grouping tuples into nodes");
+
     // Group tuples into nodes
     for (int i = 0; i < in->nTuples; i++)
     {
@@ -1443,23 +1465,27 @@ spgist_kmer_picksplit(PG_FUNCTION_ARGS)
 
         Kmer *suffix = NULL;
         const char *sequence = kmer_to_str(DatumGetKmerP(nodes[i].d));
+        //elog(INFO, "spgist_kmer_picksplit: Considering sequence = %s", sequence);
         if (common_length < strlen(sequence))
         {
             char *suffix_sequence = palloc0(strlen(sequence) - common_length + 1);
             memcpy(suffix_sequence, sequence + common_length, strlen(sequence) - common_length);
             suffix_sequence[strlen(sequence) - common_length] = '\0';
+            //elog(INFO, "spgist_kmer_picksplit: Suffix = %s", suffix_sequence);
 
             suffix = kmer_make(suffix_sequence);
             pfree(suffix_sequence);
         }
         else
         {
+            //elog(INFO, "spgist_kmer_picksplit: Empty suffix");
             suffix = kmer_make("");
         }
 
         out->leafTupleDatums[nodes[i].i] = FORM_KMER_DATUM(suffix);
         out->mapTuplesToNodes[nodes[i].i] = out->nNodes - 1;
     }
+    //elog(INFO, "spgist_kmer_picksplit: nNodes = %d", out->nNodes);
 
     pfree(nodes);
 
@@ -1482,13 +1508,15 @@ spgist_kmer_inner_consistent(PG_FUNCTION_ARGS)
     int maxReconstrLen;
     char *reconstrSequence;
     int i;
+    elog(DEBUG1, "spgist_kmer_inner_consistent: Level = %d", in->level);
 
     /* Reconstruct the sequence from the parent value and prefix */
     if (in->reconstructedValue != (Datum) 0)
     {
-        reconstructedKmer = DatumGetKmerP(in->reconstructedValue);
+        reconstructedKmer = (Kmer *) DatumGetKmerP(in->reconstructedValue);
         reconstructedSequence = kmer_to_str(reconstructedKmer);
         reconstructedLength = reconstructedKmer->length;
+        elog(DEBUG1, "spgist_kmer_inner_consistent: Reconstructed sequence = %s", reconstructedSequence);
     }
 
     if (in->hasPrefix)
@@ -1496,6 +1524,7 @@ spgist_kmer_inner_consistent(PG_FUNCTION_ARGS)
         prefixKmer = DatumGetKmerP(in->prefixDatum);
         prefixSequence = kmer_to_str(prefixKmer);
         prefixLength = prefixKmer->length;
+        elog(DEBUG1, "spgist_kmer_inner_consistent: Prefix sequence = %s", prefixSequence);
     }
 
     maxReconstrLen = reconstructedLength + prefixLength + 1; /* +1 for node label */
@@ -1531,6 +1560,7 @@ spgist_kmer_inner_consistent(PG_FUNCTION_ARGS)
             reconstrSequence[thisLen] = (char) nodeLabel;
             thisLen++;
         }
+        elog(DEBUG1, "spgist_kmer_inner_consistent: Reconstructed sequence = %s", reconstrSequence);
 
         /* Check consistency with the query conditions */
         for (j = 0; j < in->nkeys; j++)
@@ -1540,6 +1570,11 @@ spgist_kmer_inner_consistent(PG_FUNCTION_ARGS)
             const char *querySequence = kmer_to_str(queryKmer);
             int queryLength = queryKmer->length;
             int cmpResult = memcmp(reconstrSequence, querySequence, Min(thisLen, queryLength));
+
+            elog(DEBUG1, "spgist_kmer_inner_consistent: Query sequence = %s", querySequence);
+            elog(DEBUG1, "spgist_kmer_inner_consistent: Comparison result = %d", cmpResult);
+
+            elog(DEBUG1, "spgist_kmer_inner_consistent: Strategy = %d", strategy);
 
             switch (strategy)
             {
@@ -1583,6 +1618,7 @@ spgist_kmer_inner_consistent(PG_FUNCTION_ARGS)
 
             Kmer *newReconstructedKmer = kmer_make(reconstrSequence);
             newReconstructedKmer->length = thisLen;
+            elog(DEBUG1, "spgist_kmer_inner_consistent: New reconstructed sequence = %s", reconstrSequence);
 
             out->reconstructedValues[out->nNodes] =
                 FORM_KMER_DATUM(newReconstructedKmer);
@@ -1617,6 +1653,7 @@ spgist_kmer_leaf_consistent(PG_FUNCTION_ARGS)
     if (DatumGetPointer(in->reconstructedValue))
     {
         reconstrKmer = DatumGetKmerP(in->reconstructedValue);
+        elog(DEBUG1, "spgist_kmer_leaf_consistent: Reconstructed sequence = %s", kmer_to_str(reconstrKmer));
     }
 
     /* Ensure that reconstructed Kmer's length matches the level */

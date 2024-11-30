@@ -291,6 +291,7 @@ CREATE FUNCTION spgist_kmer_leaf_consistent(internal, internal) RETURNS bool
 
 CREATE OPERATOR CLASS spgist_kmer_ops
 DEFAULT FOR TYPE kmer USING spgist AS
+    OPERATOR 1 = (kmer, kmer),
     FUNCTION 1 spgist_kmer_config(internal, internal),
     FUNCTION 2 spgist_kmer_choose(internal, internal),
     FUNCTION 3 spgist_kmer_picksplit(internal, internal),
