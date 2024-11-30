@@ -218,7 +218,7 @@ PG_FUNCTION_INFO_V1(dna_out);
 Datum
 dna_out(PG_FUNCTION_ARGS)
 {
-  Dna *dna = PG_GETARG_VARLENA_P(0);
+  Dna *dna = (Dna *) PG_GETARG_VARLENA_P(0);
   char *result = dna_to_str(dna);
   PG_FREE_IF_COPY(dna, 0);
   PG_RETURN_CSTRING(result);
@@ -291,7 +291,7 @@ PG_FUNCTION_INFO_V1(dna_cast_to_text);
 Datum
 dna_cast_to_text(PG_FUNCTION_ARGS)
 {
-  Dna *dna  = PG_GETARG_VARLENA_P(0);
+  Dna *dna  = (Dna *) PG_GETARG_VARLENA_P(0);
   text *out = (text *)DirectFunctionCall1(textin,
             PointerGetDatum(dna_to_str(dna)));
   PG_FREE_IF_COPY(dna, 0);
@@ -309,7 +309,7 @@ PG_FUNCTION_INFO_V1(dna_to_string);
 Datum
 dna_to_string(PG_FUNCTION_ARGS)
 {
-    Dna *dna = PG_GETARG_VARLENA_P(0);
+    Dna *dna = (Dna *) PG_GETARG_VARLENA_P(0);
     char *result = decode_dna(dna->bit_sequence, dna->length);  // Decode bit_sequence to a readable string
     PG_FREE_IF_COPY(dna, 0);
     PG_RETURN_CSTRING(result);
@@ -340,8 +340,8 @@ PG_FUNCTION_INFO_V1(equals);
 Datum
 equals(PG_FUNCTION_ARGS)
 {
-  Dna *dna1 = PG_GETARG_VARLENA_P(0);
-  Dna *dna2 = PG_GETARG_VARLENA_P(1);
+  Dna *dna1 = (Dna *) PG_GETARG_VARLENA_P(0);
+  Dna *dna2 = (Dna *) PG_GETARG_VARLENA_P(1);
   bool result = dna_eq_internal(dna1, dna2);
   PG_FREE_IF_COPY(dna1, 0);
   PG_FREE_IF_COPY(dna2, 1);
@@ -352,7 +352,7 @@ PG_FUNCTION_INFO_V1(length);
 Datum
 length(PG_FUNCTION_ARGS)
 {
-    Dna *dna = PG_GETARG_VARLENA_P(0);
+    Dna *dna = (Dna *) PG_GETARG_VARLENA_P(0);
     uint64_t length = dna->length;  // Directly get the length field
     PG_FREE_IF_COPY(dna, 0);
     PG_RETURN_INT32(length);
@@ -362,8 +362,8 @@ PG_FUNCTION_INFO_V1(dna_ne);
 Datum
 dna_ne(PG_FUNCTION_ARGS)
 {
-    Dna *dna1 = PG_GETARG_VARLENA_P(0);
-    Dna *dna2 = PG_GETARG_VARLENA_P(1);
+    Dna *dna1 = (Dna *) PG_GETARG_VARLENA_P(0);
+    Dna *dna2 = (Dna *) PG_GETARG_VARLENA_P(1);
     bool result = !dna_eq_internal(dna1, dna2);  // ~ the result of dna_eq_internal, viola!
     PG_FREE_IF_COPY(dna1, 0);
     PG_FREE_IF_COPY(dna2, 1);
@@ -727,7 +727,7 @@ generate_kmers(PG_FUNCTION_ARGS)
         oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
 
         // Extract arguments
-        dna = PG_GETARG_VARLENA_P(0); // We know the first argument is a DNA sequence (and not just text)
+        dna = (Dna *) PG_GETARG_VARLENA_P(0); // We know the first argument is a DNA sequence (and not just text)
         k = PG_GETARG_INT32(1);
 
         // Validate k
@@ -983,6 +983,19 @@ qkmer_cast_from_text(PG_FUNCTION_ARGS)
     char *str = DatumGetCString(DirectFunctionCall1(textout, PointerGetDatum(txt)));  // Convert to C string
     Qkmer *qkmer = qkmer_make(str);  // Encode the string as a Qkmer
     PG_RETURN_POINTER(qkmer);  // Return the Qkmer object
+}
+
+/*
+ * Convert a Qkmer object to a text object
+ */
+PG_FUNCTION_INFO_V1(qkmer_cast_to_text);
+Datum
+qkmer_cast_to_text(PG_FUNCTION_ARGS)
+{
+    Qkmer *qkmer = PG_GETARG_QKMER_P(0);  // Get the Qkmer object
+    text *out = (text *) DirectFunctionCall1(textin,
+                    PointerGetDatum(qkmer->sequence));  // Convert the Qkmer to a string and then to text
+    PG_RETURN_TEXT_P(out);  // Return the text object
 }
 
 /*
