@@ -262,3 +262,38 @@ CREATE OPERATOR @> (
     RIGHTARG = kmer,
     PROCEDURE = contains
 );
+
+-- For the SpGiST index
+CREATE FUNCTION get_oid(kmer)
+  RETURNS int
+  AS 'MODULE_PATHNAME', 'get_oid'
+  LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE FUNCTION spgist_kmer_config(internal, internal) RETURNS void
+    AS 'MODULE_PATHNAME', 'spgist_kmer_config'
+    LANGUAGE C IMMUTABLE;
+
+CREATE FUNCTION spgist_kmer_choose(internal, internal) RETURNS void
+    AS 'MODULE_PATHNAME', 'spgist_kmer_choose'
+    LANGUAGE C IMMUTABLE;
+
+CREATE FUNCTION spgist_kmer_picksplit(internal, internal) RETURNS void
+    AS 'MODULE_PATHNAME', 'spgist_kmer_picksplit'
+    LANGUAGE C IMMUTABLE;
+
+CREATE FUNCTION spgist_kmer_inner_consistent(internal, internal) RETURNS void
+    AS 'MODULE_PATHNAME', 'spgist_kmer_inner_consistent'
+    LANGUAGE C IMMUTABLE;
+
+CREATE FUNCTION spgist_kmer_leaf_consistent(internal, internal) RETURNS bool
+    AS 'MODULE_PATHNAME', 'spgist_kmer_leaf_consistent'
+    LANGUAGE C IMMUTABLE;
+
+CREATE OPERATOR CLASS spgist_kmer_ops
+DEFAULT FOR TYPE kmer USING spgist AS
+    FUNCTION 1 spgist_kmer_config(internal, internal),
+    FUNCTION 2 spgist_kmer_choose(internal, internal),
+    FUNCTION 3 spgist_kmer_picksplit(internal, internal),
+    FUNCTION 4 spgist_kmer_inner_consistent(internal, internal),
+    FUNCTION 5 spgist_kmer_leaf_consistent(internal, internal);
+

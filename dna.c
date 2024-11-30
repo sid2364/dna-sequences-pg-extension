@@ -9,6 +9,19 @@
 #include "utils/builtins.h" // For cstring_to_text
 #include "common/hashfn.h" // For hash_any() in kmer_hash
 #include <inttypes.h>
+#include "access/spgist.h"
+#include "parser/parse_type.h"
+#include "utils/lsyscache.h"
+#include "nodes/nodes.h"
+#include "nodes/makefuncs.h"
+#include "nodes/parsenodes.h"
+#include "common/int.h" // For pg_cmp_s16()
+
+#include "utils/pg_locale.h"
+#include "utils/datum.h"
+#include "utils/fmgrprotos.h"
+#include "mb/pg_wchar.h"
+#include "utils/sortsupport.h"
 
 #include <math.h>
 #include <float.h>
@@ -384,7 +397,7 @@ dna_ne(PG_FUNCTION_ARGS)
 static uint64_t encode_kmer(const char *sequence, int length) {
     uint64_t bit_sequence = 0;  // Single 64-bit variable to store the k-mer!
 
-    if (length <= 0 || length > 32) { // Literally cannot store a k-mer longer than 32 nucleotides
+    if (length <= -1 || length > 32) { // Literally cannot store a k-mer longer than 32 nucleotides
         ereport(ERROR, (errmsg("K-mer length must be between 1 and 32 nucleotides")));
     }
 
@@ -442,7 +455,7 @@ static char* decode_kmer(uint64_t bit_sequence, int length) {
 static bool validate_kmer_sequence(const char *sequence) {
     int length = strlen(sequence);
 
-    if (sequence == NULL || *sequence == '\0') {
+    if (sequence == NULL /*|| *sequence == '\0'*/) {
         ereport(ERROR, (errmsg("K-mer sequence cannot be empty")));
         return false;
     }
@@ -1067,3 +1080,636 @@ contains(PG_FUNCTION_ARGS)
     PG_RETURN_BOOL(true);
 }
 
+/********************************************************************************************
+* SpGIST Indexing Functions
+*
+* These functions are used to create a SpGIST index on the Kmer type
+* Modelled from: https://doxygen.postgresql.org/spgtextproc_8c_source.html
+********************************************************************************************/
+
+
+// Helper macro for forming Kmer datums
+#define FORM_KMER_DATUM(kmer_ptr) KmerPGetDatum(kmer_ptr)
+
+/*
+Struct for sorting values in picksplit
+ */
+typedef struct spgNodePtr
+{
+    Datum       d;
+    int         i;
+    int16       c;
+} spgNodePtr;
+
+/*
+* Find the length of the common prefix of a and b
+*/
+static int
+commonPrefix(const char *a, const char *b, int lena, int lenb)
+{
+    int         i = 0;
+
+    while (i < lena && i < lenb && *a == *b)
+    {
+        a++;
+        b++;
+        i++;
+    }
+
+    return i;
+}
+
+/*
+* Binary search an array of int16 datums for a match to c
+*
+* On success, *i gets the match location; on failure, it gets where to insert
+*/
+static bool
+searchChar(Datum *nodeLabels, int nNodes, int16 c, int *i)
+{
+    int StopLow = 0,
+    StopHigh = nNodes;
+
+    while (StopLow < StopHigh)
+    {
+        int StopMiddle = (StopLow + StopHigh) >> 1;
+        int16 middle = DatumGetInt16(nodeLabels[StopMiddle]);
+
+        if (c < middle)
+            StopHigh = StopMiddle;
+        else if (c > middle)
+            StopLow = StopMiddle + 1;
+        else
+        {
+            *i = StopMiddle;
+            return true;
+        }
+    }
+
+    *i = StopHigh;
+    return false;
+}
+
+static int pg_cmp_s16(int16 a, int16 b)
+{
+    return (int32) a - (int32) b;
+}
+
+/*
+qsort comparator to sort spgNodePtr structs by "c"
+ */
+static int
+cmpNodePtr(const void *a, const void *b)
+{
+    const spgNodePtr *aa = (const spgNodePtr *) a;
+    const spgNodePtr *bb = (const spgNodePtr *) b;
+
+    return pg_cmp_s16(aa->c, bb->c);
+}
+
+/*
+ A function to test and get the Oid of the Postgres type kmer
+ Required for SP-GiST implementation (and is called from Sql)
+*/
+PG_FUNCTION_INFO_V1(get_oid);
+Datum
+get_oid(PG_FUNCTION_ARGS){
+    Oid int4_oid = typenameTypeId(NULL, makeTypeName("kmer"));
+    PG_RETURN_INT32(int4_oid);
+}
+
+PG_FUNCTION_INFO_V1(spgist_kmer_config);
+Datum
+spgist_kmer_config(PG_FUNCTION_ARGS)
+{
+    spgConfigIn  *cfgin  = (spgConfigIn *) PG_GETARG_POINTER(0);
+    spgConfigOut *cfgout = (spgConfigOut *) PG_GETARG_POINTER(1);
+
+    Oid KMEROID = typenameTypeId(NULL, makeTypeName("kmer"));
+    elog(INFO, "Debug: Retrieved KMEROID = %u", KMEROID);
+
+    cfgout->prefixType = KMEROID;
+    cfgout->leafType = KMEROID;
+    cfgout->labelType = INT2OID; // TODO CHECK THIS! Essentially, the type of the node labels since the sequence is binary, this should work!
+
+    cfgout->canReturnData = true; // A node may contain already the value that we want without it being a leaf
+    cfgout->longValuesOK = true;   // Suffixing will shorten long values
+
+    PG_RETURN_VOID();
+}
+
+PG_FUNCTION_INFO_V1(spgist_kmer_choose);
+Datum
+spgist_kmer_choose(PG_FUNCTION_ARGS)
+{
+    spgChooseIn *in = (spgChooseIn *) PG_GETARG_POINTER(0);
+    spgChooseOut *out = (spgChooseOut *) PG_GETARG_POINTER(1);
+
+    Kmer *input_kmer = DatumGetKmerP(in->datum);
+    const char *input_sequence = kmer_to_str(input_kmer);
+    int input_length = input_kmer->length;
+
+    Kmer *prefix_kmer = NULL;
+    const char *prefix_sequence = NULL;
+    int prefix_length = 0;
+    int common_length = 0;
+    int next_char = -1;
+
+    if (in->hasPrefix)
+    {
+        prefix_kmer = DatumGetKmerP(in->prefixDatum);
+        prefix_sequence = kmer_to_str(prefix_kmer);
+        prefix_length = prefix_kmer->length;
+
+        // Find common prefix length
+        while (common_length < prefix_length &&
+               common_length < (input_length - in->level) &&
+               prefix_sequence[common_length] == input_sequence[in->level + common_length])
+        {
+            common_length++;
+        }
+
+        if (common_length == prefix_length)
+        {
+            next_char = (in->level + common_length < input_length)
+                          ? input_sequence[in->level + common_length]
+                          : -1;
+        }
+        else
+        {
+            // Must split prefix
+            out->resultType = spgSplitTuple;
+            if (common_length == 0)
+            {
+                out->result.splitTuple.prefixHasPrefix = false;
+            }
+            else
+            {
+                // Shorten the prefix sequence and create a new Kmer object
+                char *truncated_prefix = palloc0(common_length + 1); // +1 for null terminator
+                memcpy(truncated_prefix, prefix_sequence, common_length);
+                truncated_prefix[common_length] = '\0';
+
+                Kmer *new_prefix = kmer_make(truncated_prefix);
+
+                out->result.splitTuple.prefixHasPrefix = true;
+                out->result.splitTuple.prefixPrefixDatum = FORM_KMER_DATUM(new_prefix);
+
+                // Free the allocated truncated string
+                pfree(truncated_prefix);
+            }
+
+            out->result.splitTuple.prefixNNodes = 1;
+            out->result.splitTuple.prefixNodeLabels = (Datum *) palloc(sizeof(Datum));
+            out->result.splitTuple.prefixNodeLabels[0] = Int16GetDatum(*(unsigned char *)(prefix_sequence + common_length));
+
+            // Handle postfix splitting
+            out->result.splitTuple.childNodeN = 0; // Child index for the current node
+
+            if (prefix_length - common_length == 1)
+            {
+                out->result.splitTuple.postfixHasPrefix = false;
+            }
+            else
+            {
+                // Shorten the postfix sequence and create a new Kmer object
+                char *postfix_prefix = palloc0(prefix_length - common_length);
+                memcpy(postfix_prefix, prefix_sequence + common_length + 1, prefix_length - common_length - 1);
+                postfix_prefix[prefix_length - common_length - 1] = '\0';
+
+                Kmer *new_postfix = kmer_make(postfix_prefix);
+
+                out->result.splitTuple.postfixHasPrefix = true;
+                out->result.splitTuple.postfixPrefixDatum = FORM_KMER_DATUM(new_postfix);
+
+                // Free the allocated postfix string
+                pfree(postfix_prefix);
+            }
+
+            PG_RETURN_VOID();
+        }
+    }
+    else if (in->level < input_length)
+    {
+        next_char = input_sequence[in->level];
+    }
+    else
+    {
+        next_char = -1; // No more characters left, this is the initialisation but why not be explicit
+    }
+
+    // Look up next_char in the node label array
+    int idx;
+    if (searchChar(in->nodeLabels, in->nNodes, next_char, &idx))
+    {
+        // Match found: descend to the existing node
+        int level_add = common_length;
+        if (next_char >= 0)
+            level_add++;
+
+        out->resultType = spgMatchNode;
+        out->result.matchNode.nodeN = idx;
+        out->result.matchNode.levelAdd = level_add;
+
+        // Construct restDatum for the unmatched suffix
+        if (input_length - in->level - level_add > 0)
+        {
+            char *rest_sequence = palloc0(input_length - in->level - level_add + 1);
+            memcpy(rest_sequence, input_sequence + in->level + level_add,
+                   input_length - in->level - level_add);
+            rest_sequence[input_length - in->level - level_add] = '\0';
+
+            Kmer *rest_kmer = kmer_make(rest_sequence);
+            out->result.matchNode.restDatum = FORM_KMER_DATUM(rest_kmer);
+
+            pfree(rest_sequence);
+        }
+        else
+        {
+            out->result.matchNode.restDatum = FORM_KMER_DATUM(kmer_make("")); // TODO CHECK THIS! Empty string is usually not a good idea
+        }
+    }
+    else if (in->allTheSame)
+    {
+        // Handle the all-the-same case by splitting the tuple
+        out->resultType = spgSplitTuple;
+        out->result.splitTuple.prefixHasPrefix = in->hasPrefix;
+        out->result.splitTuple.prefixPrefixDatum = in->prefixDatum;
+        out->result.splitTuple.prefixNNodes = 1;
+        out->result.splitTuple.prefixNodeLabels = (Datum *) palloc(sizeof(Datum));
+        out->result.splitTuple.prefixNodeLabels[0] = Int16GetDatum(-2);
+        out->result.splitTuple.childNodeN = 0;
+        out->result.splitTuple.postfixHasPrefix = false;
+    }
+    else
+    {
+        // Add a node for the not-previously-seen next_char value
+        out->resultType = spgAddNode;
+        out->result.addNode.nodeLabel = Int16GetDatum(next_char);
+        out->result.addNode.nodeN = idx;
+    }
+
+    PG_RETURN_VOID();
+}
+
+PG_FUNCTION_INFO_V1(spgist_kmer_picksplit);
+Datum
+spgist_kmer_picksplit(PG_FUNCTION_ARGS)
+{
+    spgPickSplitIn *in = (spgPickSplitIn *) PG_GETARG_POINTER(0);
+    spgPickSplitOut *out = (spgPickSplitOut *) PG_GETARG_POINTER(1);
+
+    Kmer *first_kmer = DatumGetKmerP(in->datums[0]);
+    char *first_sequence = kmer_to_str(first_kmer);
+    int common_length = first_kmer->length; // Start with the full length of the first Kmer
+
+    // Find the longest common prefix
+    for (int i = 1; i < in->nTuples; i++)
+    {
+        Kmer *kmer = DatumGetKmerP(in->datums[i]);
+        char *sequence = kmer_to_str(kmer);
+        int len = 0;
+
+        while (len < common_length && len < kmer->length && first_sequence[len] == sequence[len])
+        {
+            len++;
+        }
+
+        if (len < common_length)
+        {
+            common_length = len;
+        }
+    }
+
+    // Enforce maximum prefix length
+    common_length = Min(common_length, 32);
+
+    // Construct the prefix if it exists
+    if (common_length > 0)
+    {
+        char *truncated_prefix = palloc0(common_length + 1);
+        memcpy(truncated_prefix, first_sequence, common_length);
+        truncated_prefix[common_length] = '\0';
+
+        Kmer *new_prefix = kmer_make(truncated_prefix);
+        out->hasPrefix = true;
+        out->prefixDatum = FORM_KMER_DATUM(new_prefix);
+
+        pfree(truncated_prefix);
+    }
+    else
+    {
+        out->hasPrefix = false;
+    }
+
+    spgNodePtr *nodes = palloc(sizeof(spgNodePtr) * in->nTuples);
+
+    for (int i = 0; i < in->nTuples; i++)
+    {
+        Kmer *kmer = DatumGetKmerP(in->datums[i]);
+        const char *sequence = kmer_to_str(kmer);
+
+        if (common_length < kmer->length)
+        {
+            //nodes[i].c = (int16)sequence[common_length];
+            nodes[i].c = *(unsigned char *) (sequence + common_length);
+        }
+        else
+        {
+            nodes[i].c = -1; // Entire string matches the prefix
+        }
+
+        nodes[i].i = i;
+        nodes[i].d = in->datums[i];
+    }
+
+    // Sort nodes by their next character so we can group them, also allows binary search
+    qsort(nodes, in->nTuples, sizeof(*nodes), cmpNodePtr);
+
+    // Initialize output structures
+    out->nNodes = 0;
+    out->nodeLabels = palloc(sizeof(Datum) * in->nTuples);
+    out->mapTuplesToNodes = palloc(sizeof(int) * in->nTuples);
+    out->leafTupleDatums = palloc(sizeof(Datum) * in->nTuples);
+
+    // Group tuples into nodes
+    for (int i = 0; i < in->nTuples; i++)
+    {
+        if (i == 0 || nodes[i].c != nodes[i - 1].c)
+        {
+            out->nodeLabels[out->nNodes] = Int16GetDatum(nodes[i].c);
+            out->nNodes++;
+        }
+
+        Kmer *suffix = NULL;
+        const char *sequence = kmer_to_str(DatumGetKmerP(nodes[i].d));
+        if (common_length < strlen(sequence))
+        {
+            char *suffix_sequence = palloc0(strlen(sequence) - common_length + 1);
+            memcpy(suffix_sequence, sequence + common_length, strlen(sequence) - common_length);
+            suffix_sequence[strlen(sequence) - common_length] = '\0';
+
+            suffix = kmer_make(suffix_sequence);
+            pfree(suffix_sequence);
+        }
+        else
+        {
+            suffix = kmer_make("");
+        }
+
+        out->leafTupleDatums[nodes[i].i] = FORM_KMER_DATUM(suffix);
+        out->mapTuplesToNodes[nodes[i].i] = out->nNodes - 1;
+    }
+
+    pfree(nodes);
+
+    PG_RETURN_VOID();
+}
+
+PG_FUNCTION_INFO_V1(spgist_kmer_inner_consistent);
+Datum
+spgist_kmer_inner_consistent(PG_FUNCTION_ARGS)
+{
+    spgInnerConsistentIn *in = (spgInnerConsistentIn *) PG_GETARG_POINTER(0);
+    spgInnerConsistentOut *out = (spgInnerConsistentOut *) PG_GETARG_POINTER(1);
+
+    Kmer *reconstructedKmer = NULL;
+    char *reconstructedSequence = NULL;
+    int reconstructedLength = in->level;
+    Kmer *prefixKmer = NULL;
+    char *prefixSequence = NULL;
+    int prefixLength = 0;
+    int maxReconstrLen;
+    char *reconstrSequence;
+    int i;
+
+    /* Reconstruct the sequence from the parent value and prefix */
+    if (in->reconstructedValue != (Datum) 0)
+    {
+        reconstructedKmer = DatumGetKmerP(in->reconstructedValue);
+        reconstructedSequence = kmer_to_str(reconstructedKmer);
+        reconstructedLength = reconstructedKmer->length;
+    }
+
+    if (in->hasPrefix)
+    {
+        prefixKmer = DatumGetKmerP(in->prefixDatum);
+        prefixSequence = kmer_to_str(prefixKmer);
+        prefixLength = prefixKmer->length;
+    }
+
+    maxReconstrLen = reconstructedLength + prefixLength + 1; /* +1 for node label */
+    reconstrSequence = palloc0(maxReconstrLen);
+
+    if (reconstructedSequence)
+    {
+        memcpy(reconstrSequence, reconstructedSequence, reconstructedLength);
+    }
+
+    if (prefixSequence)
+    {
+        memcpy(reconstrSequence + reconstructedLength, prefixSequence, prefixLength);
+    }
+
+    /* Prepare the output arrays */
+    out->nodeNumbers = (int *) palloc(sizeof(int) * in->nNodes);
+    out->levelAdds = (int *) palloc(sizeof(int) * in->nNodes);
+    out->reconstructedValues = (Datum *) palloc(sizeof(Datum) * in->nNodes);
+    out->nNodes = 0;
+
+    /* Process each child node */
+    for (i = 0; i < in->nNodes; i++)
+    {
+        int16 nodeLabel = DatumGetInt16(in->nodeLabels[i]);
+        int thisLen = reconstructedLength + prefixLength;
+        bool isConsistent = true;
+        int j;
+
+        /* Append the node label if it's not a dummy value */
+        if (nodeLabel >= 0)
+        {
+            reconstrSequence[thisLen] = (char) nodeLabel;
+            thisLen++;
+        }
+
+        /* Check consistency with the query conditions */
+        for (j = 0; j < in->nkeys; j++)
+        {
+            StrategyNumber strategy = in->scankeys[j].sk_strategy;
+            Kmer *queryKmer = DatumGetKmerP(in->scankeys[j].sk_argument);
+            const char *querySequence = kmer_to_str(queryKmer);
+            int queryLength = queryKmer->length;
+            int cmpResult = memcmp(reconstrSequence, querySequence, Min(thisLen, queryLength));
+
+            switch (strategy)
+            {
+                case BTLessStrategyNumber:
+                case BTLessEqualStrategyNumber:
+                    if (cmpResult > 0)
+                        isConsistent = false;
+                    break;
+
+                case BTEqualStrategyNumber:
+                    if (cmpResult != 0 || queryLength != thisLen)
+                        isConsistent = false;
+                    break;
+
+                case BTGreaterEqualStrategyNumber:
+                case BTGreaterStrategyNumber:
+                    if (cmpResult < 0)
+                        isConsistent = false;
+                    break;
+
+                case RTPrefixStrategyNumber:
+                    if (cmpResult != 0)
+                        isConsistent = false;
+                    break;
+
+                default:
+                    elog(ERROR, "unrecognized strategy number: %d",
+                         strategy);
+                    break;
+            }
+
+            if (!isConsistent) // No need to check further
+                break;
+        }
+
+        // Add consistent nodes to the output
+        if (isConsistent)
+        {
+            out->nodeNumbers[out->nNodes] = i;
+            out->levelAdds[out->nNodes] = thisLen - in->level;
+
+            Kmer *newReconstructedKmer = kmer_make(reconstrSequence);
+            newReconstructedKmer->length = thisLen;
+
+            out->reconstructedValues[out->nNodes] =
+                FORM_KMER_DATUM(newReconstructedKmer);
+
+            out->nNodes++;
+        }
+    }
+
+    // Clean up
+    pfree(reconstrSequence);
+
+    PG_RETURN_VOID();
+}
+
+PG_FUNCTION_INFO_V1(spgist_kmer_leaf_consistent);
+Datum
+spgist_kmer_leaf_consistent(PG_FUNCTION_ARGS)
+{
+    spgLeafConsistentIn *in = (spgLeafConsistentIn *) PG_GETARG_POINTER(0);
+    spgLeafConsistentOut *out = (spgLeafConsistentOut *) PG_GETARG_POINTER(1);
+    int level = in->level;
+    Kmer *leafKmer = DatumGetKmerP(in->leafDatum);
+    Kmer *reconstrKmer = NULL;
+    char *fullSequence = NULL;
+    int fullLength;
+    bool result = true;
+
+    /* All tests are exact */
+    out->recheck = false;
+
+    /* Retrieve reconstructed value from parent level, if any */
+    if (DatumGetPointer(in->reconstructedValue))
+    {
+        reconstrKmer = DatumGetKmerP(in->reconstructedValue);
+    }
+
+    /* Ensure that reconstructed Kmer's length matches the level */
+    Assert(reconstrKmer == NULL ? level == 0 : reconstrKmer->length == level);
+
+    /* Reconstruct the full sequence represented by this leaf tuple */
+    fullLength = level + leafKmer->length;
+    if (leafKmer->length == 0 && level > 0)
+    {
+        /* No leaf value, use only the reconstructed sequence */
+        fullSequence = kmer_to_str(reconstrKmer);
+        out->leafValue = in->reconstructedValue;
+    }
+    else
+    {
+        /* Combine reconstructed value and leaf value */
+        fullSequence = palloc(fullLength + 1); /* +1 for null-terminator */
+        if (level > 0)
+        {
+            memcpy(fullSequence, kmer_to_str(reconstrKmer), level);
+        }
+        if (leafKmer->length > 0)
+        {
+            memcpy(fullSequence + level, kmer_to_str(leafKmer), leafKmer->length);
+        }
+        fullSequence[fullLength] = '\0'; /* Null-terminate the combined sequence */
+
+        /* Create a new Kmer for the reconstructed full sequence */
+        Kmer *fullKmer = kmer_make(fullSequence);
+        out->leafValue = FORM_KMER_DATUM(fullKmer);
+    }
+
+    /* Perform the required comparisons */
+    for (int i = 0; i < in->nkeys; i++)
+    {
+        StrategyNumber strategy = in->scankeys[i].sk_strategy;
+        Kmer *queryKmer = DatumGetKmerP(in->scankeys[i].sk_argument);
+        const char *querySequence = kmer_to_str(queryKmer);
+        int queryLength = queryKmer->length;
+        int cmpResult;
+
+        if (strategy == RTPrefixStrategyNumber)
+        {
+            /*
+             * If level >= query length, then the reconstructed value must begin
+             * with the query string, so we don't need to check it again.
+             */
+            result = (level >= queryLength) ||
+                     (strncmp(fullSequence, querySequence, queryLength) == 0);
+
+            if (!result)
+                break; /* No need to consider further conditions */
+            continue;
+        }
+
+        /* Perform comparison based on strategy */
+        cmpResult = strncmp(fullSequence, querySequence, Min(fullLength, queryLength));
+        if (cmpResult == 0)
+        {
+            if (queryLength > fullLength)
+                cmpResult = -1;
+            else if (queryLength < fullLength)
+                cmpResult = 1;
+        }
+
+        switch (strategy)
+        {
+            case BTLessStrategyNumber:
+                result = (cmpResult < 0);
+                break;
+            case BTLessEqualStrategyNumber:
+                result = (cmpResult <= 0);
+                break;
+            case BTEqualStrategyNumber:
+                result = (cmpResult == 0);
+                break;
+            case BTGreaterEqualStrategyNumber:
+                result = (cmpResult >= 0);
+                break;
+            case BTGreaterStrategyNumber:
+                result = (cmpResult > 0);
+                break;
+            default:
+                elog(ERROR, "unrecognized strategy number: %d",
+                     strategy);
+                result = false;
+                break;
+        }
+
+        if (!result)
+            break; /* No need to consider further conditions */
+    }
+
+    /* Return the final comparison result */
+    PG_RETURN_BOOL(result);
+}
