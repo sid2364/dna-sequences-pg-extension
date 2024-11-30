@@ -200,7 +200,6 @@ CREATE OPERATOR ^@ (
     PROCEDURE = starts_with
 );
 
-
 --For defining the hash function for the kmer type
 CREATE FUNCTION kmer_hash(kmer)
     RETURNS INTEGER
@@ -245,6 +244,13 @@ CREATE FUNCTION length(qkmer) RETURNS int
 CREATE FUNCTION equals(qkmer, qkmer) RETURNS boolean
     AS 'MODULE_PATHNAME', 'qkmer_eq'
      LANGUAGE C IMMUTABLE STRICT;
+
+CREATE OR REPLACE FUNCTION qkmer(text)
+  RETURNS qkmer
+  AS 'MODULE_PATHNAME', 'qkmer_cast_from_text'
+  LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE CAST (text AS qkmer) WITH FUNCTION qkmer(text) AS IMPLICIT;
 
 CREATE OPERATOR = (
     LEFTARG = qkmer,

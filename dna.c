@@ -971,6 +971,20 @@ qkmer_send(PG_FUNCTION_ARGS)
     PG_RETURN_BYTEA_P(pq_endtypsend(&buf));
 }
 
+
+/*
+ * Convert a text object to a Qkmer object
+ */
+PG_FUNCTION_INFO_V1(qkmer_cast_from_text);
+Datum
+qkmer_cast_from_text(PG_FUNCTION_ARGS)
+{
+    text *txt = PG_GETARG_TEXT_P(0);  // Get the input text
+    char *str = DatumGetCString(DirectFunctionCall1(textout, PointerGetDatum(txt)));  // Convert to C string
+    Qkmer *qkmer = qkmer_make(str);  // Encode the string as a Qkmer
+    PG_RETURN_POINTER(qkmer);  // Return the Qkmer object
+}
+
 /*
 * Uses the output of generate_kmers to generate qkmers that match a given pattern
 *
