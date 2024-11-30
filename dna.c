@@ -1187,7 +1187,7 @@ spgist_kmer_config(PG_FUNCTION_ARGS)
     spgConfigOut *cfgout = (spgConfigOut *) PG_GETARG_POINTER(1);
 
     Oid KMEROID = typenameTypeId(NULL, makeTypeName("kmer"));
-    elog(INFO, "spgist_kmer_config: Retrieved KMEROID = %u", KMEROID);
+    //elog(INFO, "spgist_kmer_config: Retrieved KMEROID = %u", KMEROID);
 
     cfgout->prefixType = KMEROID;
     cfgout->leafType = KMEROID;
