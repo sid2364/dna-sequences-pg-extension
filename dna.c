@@ -1353,9 +1353,10 @@ spgist_kmer_choose(PG_FUNCTION_ARGS)
         out->result.splitTuple.prefixPrefixDatum = in->prefixDatum;
         out->result.splitTuple.prefixNNodes = 1;
         out->result.splitTuple.prefixNodeLabels = (Datum *) palloc(sizeof(Datum));
-        out->result.splitTuple.prefixNodeLabels[0] = Int16GetDatum(-2); // THIS IS A HACK! FIXME: Change this to something more meaningful
+        //out->result.splitTuple.prefixNodeLabels[0] = Int16GetDatum(-2); // THIS IS A HACK! FIXME: Change this to something more meaningful
         //out->result.splitTuple.prefixNodeLabels[0] = Int16GetDatum('X'); // THIS IS A HACK! FIXME: Change this to something more meaningful
-        out->result.splitTuple.childNodeN = 0;
+        out->result.splitTuple.prefixNodeLabels[0] = Int16GetDatum(nodeChar);
+        out->result.splitTuple.childNodeN++;
         out->result.splitTuple.postfixHasPrefix = false;
     } else {
         // Add a node for the not-previously-seen next_char value
@@ -1669,6 +1670,12 @@ spgist_kmer_leaf_consistent(PG_FUNCTION_ARGS)
 
     elog(INFO, "spgist_kmer_leaf_consistent: ---------------------------------------------------");
     elog(INFO, "spgist_kmer_leaf_consistent: leaf sequence = %s", leafSequence);
+
+    // If leafSequence is NULL, then just return since it's a null node
+//    if (leafSequence == NULL) {
+//        elog(INFO, "spgist_kmer_leaf_consistent: Leaf sequence is NULL, returning false");
+//        PG_RETURN_BOOL(false);
+//    }
 
     /* All tests are exact */
     out->recheck = false;
