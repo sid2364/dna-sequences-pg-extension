@@ -205,3 +205,8 @@ WHERE indexrelname = 'spgist_kmer_idx';
 ---- relid  | indexrelid | schemaname |   relname   |  indexrelname   | idx_scan |         last_idx_scan         | idx_tup_read | idx_tup_fetch
 ------------+------------+------------+-------------+-----------------+----------+-------------------------------+--------------+---------------
 ---- 485317 |     485327 | public     | kmer_data_t | spgist_kmer_idx |        1 | 2024-11-30 15:17:12.273336+01 |      2117696 |             0
+
+
+SET enable_seqscan = OFF;
+EXPLAIN ANALYZE
+SELECT * FROM kmer_data_t WHERE kmer_sequence ^@ 'ACTG';

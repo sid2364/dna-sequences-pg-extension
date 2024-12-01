@@ -810,6 +810,20 @@ generate_kmers(PG_FUNCTION_ARGS)
         SRF_RETURN_DONE(funcctx);
     }
 }
+
+// starts_with function, takes in two char* and returns a boolean
+bool starts_with_internal(const char *prefix, const char *kmer)
+{
+    int prefix_length = strlen(prefix);
+    int kmer_length = strlen(kmer);
+
+    if (prefix_length > kmer_length) {
+        ereport(ERROR, (errmsg("Prefix length cannot exceed kmer length")));
+    }
+
+    return strncmp(prefix, kmer, prefix_length) == 0;
+}
+
 /*
  * Basically just checks if the prefix is the same as the first n nucleotides of the kmer
  */
@@ -1520,20 +1534,21 @@ spgist_kmer_inner_consistent(PG_FUNCTION_ARGS)
         prefixSequence = kmer_to_str(prefixKmer);
         prefixLength = prefixKmer->length;
         maxReconstrLen += prefixLength;
+        elog(INFO, "spgist_kmer_inner_consistent: after in->hasPrefix, maxReconstrLen = %d", maxReconstrLen);
     }
 
     reconstrSequence = palloc0(maxReconstrLen);
 
     if (in->level) {
         reconstructedSequence = kmer_to_str(reconstructedKmer);
-        elog(INFO, "spgist_kmer_inner_consistent: Reconstructed sequence = %s", reconstructedSequence);
+        elog(INFO, "spgist_kmer_inner_consistent: Reconstructed from sequence = %s", reconstructedSequence);
         memcpy(reconstrSequence, reconstructedSequence, in->level);
-        elog(INFO, "spgist_kmer_inner_consistent: Reconstructed sequence = %s", reconstrSequence);
+        elog(INFO, "spgist_kmer_inner_consistent: Reconstructed to sequence = %s", reconstrSequence);
     }
 
     if (prefixLength) {
         memcpy(reconstrSequence + in->level, prefixSequence, prefixLength);
-        elog(INFO, "spgist_kmer_inner_consistent: Reconstructed sequence = %s", reconstrSequence);
+        elog(INFO, "spgist_kmer_inner_consistent: Reconstructed to sequence = %s", reconstrSequence);
     }
 
     // Last byte will be filled in below
@@ -1550,6 +1565,7 @@ spgist_kmer_inner_consistent(PG_FUNCTION_ARGS)
         int16 nodeChar = DatumGetInt16(in->nodeLabels[i]);
         elog(INFO, "spgist_kmer_inner_consistent: ===============" );
         elog(INFO, "spgist_kmer_inner_consistent: Node label = %c", nodeChar);
+        elog(INFO, "spgist_kmer_inner_consistent: Node label = %d", nodeChar);
         int thisLen;
         bool res = true;
         int j;
@@ -1582,50 +1598,25 @@ spgist_kmer_inner_consistent(PG_FUNCTION_ARGS)
             elog(INFO, "spgist_kmer_inner_consistent: Strategy = %d", strategy);
             elog(INFO, "spgist_kmer_inner_consistent: InSize = %d, ThisLen = %d", inSize, thisLen);
 
-/*
-            switch (strategy) {
-                case BTLessStrategyNumber:
-                case BTLessEqualStrategyNumber:
-                    elog(INFO, "spgist_kmer_inner_consistent: less/less equal");
-                    if (r >= 0) {
-                        res = false;
-                        elog(INFO, "spgist_kmer_inner_consistent: ++++++ Not less!");
-                    } else {
-                        elog(INFO, "spgist_kmer_inner_consistent: ------ Less!");
-                    }
-                    break;
-                case BTEqualStrategyNumber:
-                    elog(INFO, "spgist_kmer_inner_consistent: InSize = %d, ThisLen = %d", inSize, thisLen);
-                    if (r != 0 || inSize != thisLen) {
-                        res = false;
-                        elog(INFO, "spgist_kmer_inner_consistent: Not equal!");
-                    } else {
-                        elog(INFO, "spgist_kmer_inner_consistent: Equal!");
-                    }
-                    break;
-                case BTGreaterEqualStrategyNumber:
-                case BTGreaterStrategyNumber:
-                    if (r <= 0)
-                        res = false;
-                    break;
-                case RTPrefixStrategyNumber:
-                    if (r != 0)
-                        res = false;
-                    break;
-                default:
-                    elog(ERROR, "unrecognized strategy number: %d", strategy);
-                    break;
-            }
-            if (!res) {
-                elog(INFO, "spgist_kmer_inner_consistent: Not consistent!");
-                break;
-            }
-            */
             switch (strategy) {
                 case 1: // Equality operator from our index definition
                     res = (r == 0);
                     elog(INFO, "spgist_kmer_inner_consistent: Equality operator");
                     elog(INFO, "spgist_kmer_inner_consistent: r = %d", r);
+                    break;
+                case 2: // starts_with() or ^@ operator from our index definition
+                    elog(INFO, "spgist_kmer_inner_consistent: Strategy = 2");
+                    elog(INFO, "spgist_kmer_inner_consistent: in->level = %d", in->level);
+                    elog(INFO, "spgist_kmer_inner_consistent: inSize = %d", inSize);
+                    elog(INFO, "spgist_kmer_inner_consistent: inKmer = %s", kmer_to_str(inKmer));
+                    elog(INFO, "spgist_kmer_inner_consistent: reconstrSequence = %s", reconstrSequence);
+                    if (in->level >= inSize) {
+                        res = 1;
+                    } else {
+                        res = starts_with_internal(reconstrSequence, kmer_to_str(inKmer));
+                    }
+                    elog(INFO, "spgist_kmer_inner_consistent: Starts with");
+                    elog(INFO, "spgist_kmer_inner_consistent: res = %d", res);
                     break;
                 default:
                     elog(ERROR, "unrecognized strategy number: %d", strategy);
@@ -1725,13 +1716,6 @@ spgist_kmer_leaf_consistent(PG_FUNCTION_ARGS)
         int queryLength = queryKmer->length;
         int r;
 
-        if (strategy == RTPrefixStrategyNumber) {
-//            res = (level >= queryLength) || starts_with(fullSequence, querySequence); // TODO Check if this is correct for starts_with!
-//            if (!res)
-//                break;
-//            continue;
-        }
-
         elog(INFO, "spgist_kmer_leaf_consistent: Query sequence = %s", querySequence);
         elog(INFO, "spgist_kmer_leaf_consistent: Full sequence = %s", fullSequence);
         r = strncmp(fullSequence, querySequence, Min(fullLength, queryLength));
@@ -1742,6 +1726,20 @@ spgist_kmer_leaf_consistent(PG_FUNCTION_ARGS)
                 res = (r == 0);
                 elog(INFO, "spgist_kmer_leaf_consistent: Equality operator");
                 elog(INFO, "spgist_kmer_leaf_consistent: r = %d", r);
+                elog(INFO, "spgist_kmer_leaf_consistent: res = %d", res);
+                break;
+            case 2:
+                elog(INFO, "spgist_kmer_leaf_consistent: Strategy = 2");
+                elog(INFO, "spgist_kmer_leaf_consistent: level = %d", level);
+                elog(INFO, "spgist_kmer_leaf_consistent: queryLength = %d", queryLength);
+                elog(INFO, "spgist_kmer_leaf_consistent: queryKmer = %s", querySequence);
+                elog(INFO, "spgist_kmer_leaf_consistent: fullSequence = %s", fullSequence);
+                if (level >= queryLength) {
+                    res = 1;
+                } else {
+                    res = starts_with_internal(fullSequence, querySequence);
+                }
+                elog(INFO, "spgist_kmer_leaf_consistent: Starts with");
                 elog(INFO, "spgist_kmer_leaf_consistent: res = %d", res);
                 break;
             default:
