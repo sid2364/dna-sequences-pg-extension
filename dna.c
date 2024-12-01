@@ -1672,7 +1672,7 @@ spgist_kmer_leaf_consistent(PG_FUNCTION_ARGS)
     elog(INFO, "spgist_kmer_leaf_consistent: leaf sequence = %s", leafSequence);
 
     // If leafSequence is NULL, then just return since it's a null node
-//    if (leafSequence == NULL) {
+//    if (leafSequence == NULL || leafSequence[0] == '\0') {
 //        elog(INFO, "spgist_kmer_leaf_consistent: Leaf sequence is NULL, returning false");
 //        PG_RETURN_BOOL(false);
 //    }
@@ -1699,6 +1699,7 @@ spgist_kmer_leaf_consistent(PG_FUNCTION_ARGS)
         out->leafValue = PointerGetDatum(reconstrKmer);
     }
     else {
+        fullLength = Min(fullLength, level);
         fullSequence = palloc(fullLength + 1);
         if (level > 0)
         {
@@ -1731,18 +1732,14 @@ spgist_kmer_leaf_consistent(PG_FUNCTION_ARGS)
 //            continue;
         }
 
+        elog(INFO, "spgist_kmer_leaf_consistent: Query sequence = %s", querySequence);
+        elog(INFO, "spgist_kmer_leaf_consistent: Full sequence = %s", fullSequence);
         r = strncmp(fullSequence, querySequence, Min(fullLength, queryLength));
         elog(INFO, "spgist_kmer_leaf_consistent: Comparison result = %d", r);
-        if (r == 0) {
-            if (queryLength > fullLength)
-                r = -1;
-            else if (queryLength < fullLength)
-                r = 1;
-        }
 
         switch (strategy) {
             case 1:
-                res = r;
+                res = (r == 0);
                 elog(INFO, "spgist_kmer_leaf_consistent: Equality operator");
                 elog(INFO, "spgist_kmer_leaf_consistent: r = %d", r);
                 elog(INFO, "spgist_kmer_leaf_consistent: res = %d", res);
