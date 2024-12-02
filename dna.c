@@ -412,7 +412,7 @@ static uint64_t encode_kmer(const char *sequence, int length) {
  */
 static char* decode_kmer(uint64_t bit_sequence, int length) {
     // Allocate memory for the k-mer string (+1 for null terminator)
-    char *sequence = palloc(length + 1);
+    char *sequence = palloc0(length + 1);
     sequence[length] = '\0';
 
     if (length <= 0 || length > 32) { // Ideally, nobody should pass invalid lengths, but just in case
@@ -440,12 +440,14 @@ static char* decode_kmer(uint64_t bit_sequence, int length) {
  * Only difference here (from DNA) is that we also check the length of the k-mer
  */
 static bool validate_kmer_sequence(const char *sequence) {
-    int length = strlen(sequence);
+    size_t length;
 
-    if (sequence == NULL || *sequence == '\0') {
+    if (sequence == NULL /*|| *sequence == '\0'*/) { // Allow empty k-mers, but not NULL (required for the SpGIST index)
         ereport(ERROR, (errmsg("K-mer sequence cannot be empty")));
         return false;
     }
+
+    length = strlen(sequence);
 
     if (length > 32) {
         ereport(ERROR, (errmsg("K-mer length cannot exceed 32 nucleotides")));
@@ -454,7 +456,10 @@ static bool validate_kmer_sequence(const char *sequence) {
 
     for (const char *p = sequence; *p; p++) {
         if (*p != 'A' && *p != 'T' && *p != 'C' && *p != 'G') {
-            ereport(ERROR, (errmsg("Invalid character in K-mer sequence: %c", *p)));
+            elog(INFO, "Strlen: %d", length);
+            elog(INFO, "Invalid character: %c", *p);
+            elog(INFO, "Sequence: %s", sequence);
+            ereport(ERROR, (errmsg("Invalid character in K-mer sequence: '%c'", *p)));
             return false;
         }
     }
@@ -470,17 +475,20 @@ static bool validate_kmer_sequence(const char *sequence) {
  */
 static Kmer *kmer_make(const char *sequence)
 {
-   int length = strlen(sequence);
+   int32 length;
 
    // Allocate memory for Kmer struct
    Kmer *kmer = (Kmer *) palloc0(sizeof(Kmer));
-   kmer->length = length;
 
    // Validate input
    if (sequence == NULL) {
        ereport(ERROR, (errmsg("K-mer sequence cannot be NULL")));
        return NULL;
    }
+
+   length = (int32) strlen(sequence);
+   kmer->length = length;
+   elog(INFO, "K-mer sequence: %s, strlen: %d, length: %d", sequence, strlen(sequence), length);
 
    if (!validate_kmer_sequence(sequence)) {
        ereport(ERROR, (errmsg("Invalid K-mer sequence: must contain only A, T, C, G and be at most 32 nucleotides long")));
@@ -662,7 +670,7 @@ Datum
 kmer_length(PG_FUNCTION_ARGS)
 {
     Kmer *kmer = (Kmer *) PG_GETARG_POINTER(0);  // Get the Kmer object
-    int length = kmer->length;  // Retrieve the length
+    int32 length = kmer->length;  // Retrieve the length
     PG_FREE_IF_COPY(kmer, 0);
     PG_RETURN_INT32(length);  // Return the length as an integer
 }
@@ -701,7 +709,7 @@ kmer_hash(PG_FUNCTION_ARGS)
  *
  * We don't return all kmers at once, we return them one by one, this is why we use SRF_RETURN_NEXT
  * Reference: https://www.postgresql.org/docs/current/xfunc-c.html#XFUNC-C-RETURN-SET
- */
+*/
 PG_FUNCTION_INFO_V1(generate_kmers);
 Datum
 generate_kmers(PG_FUNCTION_ARGS)
@@ -712,11 +720,11 @@ generate_kmers(PG_FUNCTION_ARGS)
     // Declare state and vars
     struct {
         Dna *dna;
-        int k;
+        int32 k;
     } *state; // We use this to store the DNA sequence and k value, seems counter-intuitive but there's no other way to store state in a SRF
     Dna *dna; // Just used to receive the DNA sequence (it's a pointer so we don't copy the whole thing)
-    int k; // Input k value
-    int current_index; // Current kmer index we're generating, part of the state
+    int32 k; // Input k value
+    int32 current_index; // Current kmer index we're generating, part of the state
     char *kmer_sequence; // Even though we store kmers as binary, we have them as strings in the intermediate stage
     Kmer *kmer; // The Kmer object we will return
 
@@ -733,6 +741,7 @@ generate_kmers(PG_FUNCTION_ARGS)
         // Validate k
         if (k <= 0 || k > 32)  // k should not exceed 32, that's usually the limit of the usefulness of k in dna sequences in practice
             ereport(ERROR, (errmsg("Invalid k value: must be between 1 and 32")));
+        elog(INFO, "Generating %d-mers from DNA sequence of length %d", k, dna->length);
 
         // Save DNA and k in funcctx
         state = palloc(sizeof(*state));
@@ -759,16 +768,18 @@ generate_kmers(PG_FUNCTION_ARGS)
         k = state->k;
 
         // Allocate memory for the kmer we will return
-        kmer_sequence = palloc(k + 1);
-        kmer_sequence[k] = '\0';  // Null-terminate the kmer, since it's a string
+        kmer_sequence = palloc0(k + 1);
 
         // Decode kmer directly from the bit_sequence
-        for (int i = 0; i < k; i++)
+        for (int32 i = 0; i < k; i++)
         {
-            int nucleotide_index = current_index + i;  // Nucleotide/character index in the DNA sequence
-            int bit_offset = (nucleotide_index * 2) % 64;  // Offset within the uint64_t
-            int chunk_index = nucleotide_index / 32;      // Where is it in the bit_sequence array
-            uint64_t bits = (dna->bit_sequence[chunk_index] >> bit_offset) & 0x3;  // AND with 0x3 to filter out just the last 2 bits
+            int32 nucleotide_index = current_index + i;  // Nucleotide/character index in the DNA sequence
+            int32 bit_offset = (nucleotide_index * 2) % 64;  // Offset within the uint64_t
+            int32 chunk_index = nucleotide_index / 32;      // Where is it in the bit_sequence array
+            int32 intra_chunk_offset = bit_offset % 64; // Offset within the chunk
+
+            uint64_t bits = (uint64_t) (dna->bit_sequence[chunk_index] >> intra_chunk_offset) & 0x3;  // AND with 0x3 to filter out just the last 2 bits
+            elog(INFO, "Nucleotide index: %d, Bit offset: %d, Chunk index: %d, Intra chunk offset: %d, Bits: %lu", nucleotide_index, bit_offset, chunk_index, intra_chunk_offset, bits);
 
             // Decode bits to string nucleotide for n00b users who can't read binary B)
             switch (bits)
@@ -781,9 +792,11 @@ generate_kmers(PG_FUNCTION_ARGS)
                     ereport(ERROR, (errmsg("Unexpected bit pattern in DNA sequence - this shouldn't ever happen!")));
             }
         }
+        kmer_sequence[k] = '\0';  // Null-terminate the kmer, since it's a string
 
         // Encode the decoded k-mer as a Kmer object
-        kmer = kmer_make(kmer_sequence);
+        elog(INFO, "Kmer sequence: '%s', length: %d", kmer_sequence, strlen(kmer_sequence));
+        kmer = kmer_make(strdup(kmer_sequence));
         pfree(kmer_sequence);  // Free the temporary k-mer string
 
         // Return just this kmer
@@ -937,7 +950,7 @@ qkmer_recv(PG_FUNCTION_ARGS)
     int length = pq_getmsgint(buf, sizeof(int));
 
     // Allocate a temporary buffer for the sequence
-    char *sequence = (char *) palloc(length + 1);
+    char *sequence = (char *) palloc0(length + 1);
     pq_copymsgbytes(buf, sequence, length);
     sequence[length] = '\0'; // Null-terminate
 

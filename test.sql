@@ -135,21 +135,85 @@ SELECT id, length(sequence) AS length, pg_column_size(sequence) AS size FROM dna
 --  1 | 1000000 | 250012
 --(1 row)
 
-
---- Now count kmers on the massive table
-WITH kmers AS (
-    SELECT k.kmer, COUNT(*) AS count
-    FROM dna_sequences d,
-         LATERAL generate_kmers(d.sequence, 5) AS k(kmer)
-    GROUP BY k.kmer
-)
-SELECT
-    SUM(count) AS total_count,
-    COUNT(*) AS distinct_count,
-    COUNT(*) FILTER (WHERE count = 1) AS unique_count
-FROM kmers;
+--
+----- Now count kmers on the massive table
+--WITH kmers AS (
+--    SELECT k.kmer, COUNT(*) AS count
+--    FROM dna_sequences d,
+--         LATERAL generate_kmers(d.sequence, 10) AS k(kmer)
+--    GROUP BY k.kmer
+--)
+--SELECT
+--    SUM(count) AS total_count,
+--    COUNT(*) AS distinct_count,
+--    COUNT(*) FILTER (WHERE count = 1) AS unique_count
+--FROM kmers;
 -- total_count | distinct_count | unique_count
 ---------------+----------------+--------------
---      999996 |           1024 |            0
+--      999991 |         644157 |       384728
 --(1 row)
+
+-- Testing the SpGIST index
+-- Create a table with k-mers which we can index once it's populated
+DROP TABLE IF EXISTS kmer_data_t;
+DO $$
+BEGIN
+    CREATE TABLE IF NOT EXISTS kmer_data_t ( -- Shouldn't exist if we DROPped it, but why not
+        id SERIAL PRIMARY KEY,
+        kmer_sequence kmer
+    );
+END $$;
+
+-- Create the SP-GiST index
+CREATE INDEX spgist_kmer_idx
+ON kmer_data_t USING spgist (kmer_sequence spgist_kmer_ops);
+----
+
+-- Populate kmer_data_t with k-mers generated from MASSIVE sequence in dna_sequences
+DO $$
+DECLARE
+    kmer_record RECORD;
+BEGIN
+    FOR kmer_record IN
+        SELECT k.kmer
+        FROM dna_sequences d,
+             LATERAL generate_kmers(d.sequence, 5) AS k(kmer) -- Generate k-mers of length 5 AGGATGAT
+    LOOP
+        INSERT INTO kmer_data_t (kmer_sequence) VALUES (kmer_record.kmer);
+    END LOOP;
+END $$;
+--
+--
+--SET client_min_messages = INFO;
+--SET log_min_messages = INFO;
+--
+------ First check without the index
+--SET enable_seqscan = ON;
+--EXPLAIN ANALYZE
+--SELECT * FROM kmer_data_t WHERE kmer_sequence = 'CTTGTGTGG';
+----SELECT * FROM kmer_data_t WHERE kmer_sequence = 'ATCGC';
+--
+--VACUUM ANALYZE kmer_data_t;
+--
+---------- Disable sequential scan and test the index
+--SET enable_seqscan = OFF;
+--EXPLAIN ANALYZE
+--SELECT * FROM kmer_data_t WHERE kmer_sequence = 'CTTGTGTGG';
+
+--SELECT *
+--FROM pg_stat_user_indexes
+--WHERE indexrelname = 'spgist_kmer_idx';
+------ relid  | indexrelid | schemaname |   relname   |  indexrelname   | idx_scan |         last_idx_scan         | idx_tup_read | idx_tup_fetch
+------------+------------+------------+-------------+-----------------+----------+-------------------------------+--------------+---------------
+---- 485317 |     485327 | public     | kmer_data_t | spgist_kmer_idx |        1 | 2024-11-30 15:17:12.273336+01 |      2117696 |             0
+--
+--
+--
+--SET enable_seqscan = ON;
+--EXPLAIN ANALYZE
+--SELECT * FROM kmer_data_t WHERE kmer_sequence ^@ 'ACTG';
+--
+--SET enable_seqscan = OFF;
+--EXPLAIN ANALYZE
+--SELECT * FROM kmer_data_t WHERE kmer_sequence ^@ 'ACTG';
 --
