@@ -409,6 +409,7 @@ static uint64_t encode_kmer(const char *sequence, int length) {
             case 'T': bit_sequence |= ((uint64_t)0x1 << offset); break; // 01 for T
             case 'C': bit_sequence |= ((uint64_t)0x2 << offset); break; // 10 for C
             case 'G': bit_sequence |= ((uint64_t)0x3 << offset); break; // 11 for G
+            case 'X': /* 00 for X */ break;  // Allow 'X' as a dummy value, will always occur at the end of a k-mer
             default:
                 ereport(ERROR, (errmsg("Invalid character in K-mer: %c", sequence[i])));
         }
@@ -455,7 +456,7 @@ static char* decode_kmer(uint64_t bit_sequence, int length) {
 static bool validate_kmer_sequence(const char *sequence) {
     int length = strlen(sequence);
 
-    if (sequence == NULL /*|| *sequence == '\0'*/) {
+    if (sequence == NULL || *sequence == '\0') {
         ereport(ERROR, (errmsg("K-mer sequence cannot be empty")));
         return false;
     }
@@ -466,7 +467,7 @@ static bool validate_kmer_sequence(const char *sequence) {
     }
 
     for (const char *p = sequence; *p; p++) {
-        if (*p != 'A' && *p != 'T' && *p != 'C' && *p != 'G') {
+        if (*p != 'A' && *p != 'T' && *p != 'C' && *p != 'G' && *p != 'X') { // We also allow 'X' for unknown nucleotides/dummy values
             ereport(ERROR, (errmsg("Invalid character in K-mer sequence: %c", *p)));
             return false;
         }
@@ -501,6 +502,7 @@ static Kmer *kmer_make(const char *sequence)
    }
 
    // Encode the K-mer sequence into the 64-bit bit_sequence
+   //elog(INFO, "Encoding K-mer: %s, length: %d", sequence, length);
    kmer->bit_sequence = encode_kmer(sequence, length);
 
    return kmer;
@@ -1355,7 +1357,7 @@ spgist_kmer_choose(PG_FUNCTION_ARGS)
 
             pfree(rest_sequence);
         } else {
-            out->result.matchNode.restDatum = FORM_KMER_DATUM(kmer_make(""));
+            out->result.matchNode.restDatum = FORM_KMER_DATUM(kmer_make("X")); // Dummy value
             ////elog(INFO, "spgist_kmer_choose: Empty rest sequence");
         }
     }
@@ -1478,7 +1480,7 @@ spgist_kmer_picksplit(PG_FUNCTION_ARGS)
             leafDatum = FORM_KMER_DATUM(suffix);
             pfree(suffix_sequence);
         } else {
-            leafDatum = FORM_KMER_DATUM(kmer_make(""));
+            leafDatum = FORM_KMER_DATUM(kmer_make("X")); // Dummy value
             //elog(INFO, "spgist_kmer_picksplit: Empty suffix for Kmer = %s", sequence);
         }
 
@@ -1686,7 +1688,7 @@ spgist_kmer_leaf_consistent(PG_FUNCTION_ARGS)
     //elog(INFO, "spgist_kmer_leaf_consistent: Full length = %d", fullLength);
     //elog(INFO, "spgist_kmer_leaf_consistent: Level = %d", level);
     //elog(INFO, "spgist_kmer_leaf_consistent: Leaf length = %d", leafKmer->length);
-    if ((leafSequence == NULL || leafSequence[0] == '\0') && level > 0) {
+    if ((leafSequence == NULL || leafSequence[0] == 'X') && level > 0) {
         fullSequence = reconstrSequence;
         out->leafValue = PointerGetDatum(reconstrKmer);
     }
@@ -1726,6 +1728,11 @@ spgist_kmer_leaf_consistent(PG_FUNCTION_ARGS)
         switch (strategy) {
             case 1:
                 res = (r == 0);
+                //elog(INFO, "spgist_kmer_leaf_consistent: fullLength = %d, queryLength = %d", fullLength, queryLength);
+                //elog(INFO, "spgist_kmer_leaf_consistent: Level = %d", level);
+                if (level < queryLength) { // We do not store kmers of this length, so partial matches are not possible
+                    res = false;
+                }
                 //elog(INFO, "spgist_kmer_leaf_consistent: Equality operator");
                 //elog(INFO, "spgist_kmer_leaf_consistent: r = %d", r);
                 //elog(INFO, "spgist_kmer_leaf_consistent: res = %d", res);
