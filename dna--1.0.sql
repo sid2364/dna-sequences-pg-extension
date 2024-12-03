@@ -305,7 +305,7 @@ CREATE OPERATOR CLASS spgist_kmer_ops
 DEFAULT FOR TYPE kmer USING spgist AS
     OPERATOR 1 = (kmer, kmer),
     OPERATOR 2 ^@ (kmer, kmer),
-    --OPERATOR 3 @> (qkmer, kmer),
+    OPERATOR 3 @> (qkmer, kmer), -- DOES NOT WORK
     FUNCTION 1 spgist_kmer_config(internal, internal),
     FUNCTION 2 spgist_kmer_choose(internal, internal),
     FUNCTION 3 spgist_kmer_picksplit(internal, internal),
