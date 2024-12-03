@@ -396,8 +396,9 @@ dna_ne(PG_FUNCTION_ARGS)
 */
 static uint64_t encode_kmer(const char *sequence, int length) {
     uint64_t bit_sequence = 0;  // Single 64-bit variable to store the k-mer!
+    //elog(INFO, "Encoding K-mer: %s, length: %d", sequence, length);
 
-    if (length <= -1 || length > 32) { // Literally cannot store a k-mer longer than 32 nucleotides
+    if (length <= 0 || length > 32) { // Literally cannot store a k-mer longer than 32 nucleotides
         ereport(ERROR, (errmsg("K-mer length must be between 1 and 32 nucleotides")));
     }
 
@@ -411,7 +412,7 @@ static uint64_t encode_kmer(const char *sequence, int length) {
             case 'G': bit_sequence |= ((uint64_t)0x3 << offset); break; // 11 for G
             case 'X': /* 00 for X */ break;  // Allow 'X' as a dummy value, will always occur at the end of a k-mer
             default:
-                ereport(ERROR, (errmsg("Invalid character in K-mer: %c", sequence[i])));
+                ereport(ERROR, (errmsg("Invalid character in K-mer: '%c'", sequence[i])));
         }
     }
 
@@ -454,12 +455,13 @@ static char* decode_kmer(uint64_t bit_sequence, int length) {
  * Only difference here (from DNA) is that we also check the length of the k-mer
  */
 static bool validate_kmer_sequence(const char *sequence) {
-    int length = strlen(sequence);
+    int length;
 
     if (sequence == NULL || *sequence == '\0') {
         ereport(ERROR, (errmsg("K-mer sequence cannot be empty")));
         return false;
     }
+    length = strlen(sequence);
 
     if (length > 32) {
         ereport(ERROR, (errmsg("K-mer length cannot exceed 32 nucleotides")));
@@ -468,7 +470,7 @@ static bool validate_kmer_sequence(const char *sequence) {
 
     for (const char *p = sequence; *p; p++) {
         if (*p != 'A' && *p != 'T' && *p != 'C' && *p != 'G' && *p != 'X') { // We also allow 'X' for unknown nucleotides/dummy values
-            ereport(ERROR, (errmsg("Invalid character in K-mer sequence: %c", *p)));
+            ereport(ERROR, (errmsg("Invalid character in K-mer sequence: '%c'", *p)));
             return false;
         }
     }
@@ -497,6 +499,7 @@ static Kmer *kmer_make(const char *sequence)
    }
    length = strlen(sequence);
    kmer->length = length;
+   //elog(INFO, "K-mer length: %d, kmer->length: %d", length, kmer->length);
 
    if (!validate_kmer_sequence(sequence)) {
        ereport(ERROR, (errmsg("Invalid K-mer sequence: must contain only A, T, C, G and be at most 32 nucleotides long")));
@@ -1303,6 +1306,7 @@ spgist_kmer_choose(PG_FUNCTION_ARGS)
                 memcpy(truncated_prefix, prefix_sequence, common_length);
                 truncated_prefix[common_length] = '\0';
 
+                //elog(INFO, "spgist_kmer_choose: Truncated prefix = '%s'", truncated_prefix);
                 new_prefix = kmer_make(truncated_prefix);
                 //elog(INFO, "spgist_kmer_choose: New prefix = %s", truncated_prefix);
 
@@ -1326,6 +1330,7 @@ spgist_kmer_choose(PG_FUNCTION_ARGS)
                 memcpy(postfix_prefix, prefix_sequence + common_length + 1, prefix_length - common_length - 1);
                 postfix_prefix[prefix_length - common_length - 1] = '\0';
 
+                //elog(INFO, "spgist_kmer_choose: Postfix prefix = '%s'", postfix_prefix);
                 new_postfix = kmer_make(postfix_prefix);
                 //elog(INFO, "spgist_kmer_choose: New postfix = %s", postfix_prefix);
 
@@ -1364,6 +1369,7 @@ spgist_kmer_choose(PG_FUNCTION_ARGS)
             memcpy(rest_sequence, input_sequence + in->level + level_add, input_length - in->level - level_add);
             rest_sequence[input_length - in->level - level_add] = '\0';
 
+            //elog(INFO, "spgist_kmer_choose: Rest sequence = '%s'", rest_sequence);
             rest_kmer = kmer_make(rest_sequence);
             out->result.matchNode.restDatum = FORM_KMER_DATUM(rest_kmer);
             //elog(INFO, "spgist_kmer_choose: Rest sequence = %s, input_sequence = %s, level_add = %d", rest_sequence, input_sequence, level_add);
@@ -1446,6 +1452,7 @@ spgist_kmer_picksplit(PG_FUNCTION_ARGS)
         memcpy(truncated_prefix, first_sequence, common_length);
         truncated_prefix[common_length] = '\0';
 
+        //elog(INFO, "spgist_kmer_picksplit: Truncated prefix = '%s'", truncated_prefix);
         new_prefix = kmer_make(truncated_prefix);
         out->hasPrefix = true;
         out->prefixDatum = FORM_KMER_DATUM(new_prefix);
@@ -1498,17 +1505,19 @@ spgist_kmer_picksplit(PG_FUNCTION_ARGS)
         if (common_length < kmer->length)
         {
             Kmer *suffix;
-            char *suffix_sequence = palloc0(kmer->length - common_length);
+            char *suffix_sequence = palloc0(kmer->length - common_length + 1);
             memcpy(suffix_sequence, sequence + common_length, kmer->length - common_length);
             suffix_sequence[kmer->length - common_length] = '\0';
+
+            //elog(INFO, "spgist_kmer_picksplit: kmer->length = %d, common_length = %d, suffix_sequence = %s", kmer->length, common_length, suffix_sequence);
+            //elog(INFO, "spgist_kmer_picksplit: suffix strlen = %d", strlen(suffix_sequence));
             suffix = kmer_make(suffix_sequence);
-            //elog(INFO, "spgist_kmer_picksplit: Suffix = %s for Kmer = %s", suffix_sequence, sequence);
             leafDatum = FORM_KMER_DATUM(suffix);
             pfree(suffix_sequence);
         }
         else
         {
-            leafDatum = FORM_KMER_DATUM(kmer_make("X")); // Dummy value
+            leafDatum = FORM_KMER_DATUM(kmer_make(strdup("X"))); // Dummy value
             //elog(INFO, "spgist_kmer_picksplit: Empty suffix for Kmer = %s", sequence);
         }
 
