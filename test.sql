@@ -136,7 +136,7 @@ SELECT id, length(sequence) AS length, pg_column_size(sequence) AS size FROM dna
 --  1 | 100000 | 25012
 --(1 row)
 
---- Now count kmers on the massive table
+--- Now count kmers on the massive table (1 Million nucleotides)
 WITH kmers AS (
     SELECT k.kmer, COUNT(*) AS count
     FROM dna_sequences d,
@@ -150,7 +150,7 @@ SELECT
 FROM kmers;
 -- total_count | distinct_count | unique_count
 ---------------+----------------+--------------
---       99991 |          95320 |        90764
+--      999991 |         644157 |       384728
 --(1 row)
 
 -- Testing the SpGIST index
@@ -185,16 +185,16 @@ VACUUM ANALYZE kmer_data_t;
 
 ------ First check without the index
 EXPLAIN ANALYZE
-SELECT * FROM kmer_data_t WHERE kmer_sequence = 'ATCGT';
---                                                  QUERY PLAN
------------------------------------------------------------------------------------------------------------------
--- Seq Scan on kmer_data_t  (cost=0.00..1886.95 rows=49998 width=20) (actual time=0.009..4.168 rows=116 loops=1)
---   Filter: (kmer_sequence = 'ATCGT'::kmer)
---   Rows Removed by Filter: 99880
--- Planning Time: 0.084 ms
--- Execution Time: 4.181 ms
+SELECT * FROM kmer_data_t WHERE kmer_sequence = 'ATCGC';
+--                                                   QUERY PLAN
+---------------------------------------------------------------------------------------------------------------------
+-- Seq Scan on kmer_data_t  (cost=0.00..18869.95 rows=499998 width=20) (actual time=0.048..41.748 rows=1025 loops=1)
+--   Filter: (kmer_sequence = 'ATCGC'::kmer)
+--   Rows Removed by Filter: 998971
+-- Planning Time: 0.117 ms
+-- Execution Time: 41.790 ms
 --(5 rows)
---
+
 
 
 -- Create the SP-GiST index
@@ -204,30 +204,29 @@ ON kmer_data_t USING spgist (kmer_sequence spgist_kmer_ops);
 -- Disable sequential scan and test the index
 SET enable_seqscan = OFF;
 EXPLAIN ANALYZE
-SELECT * FROM kmer_data_t WHERE kmer_sequence = 'ATCGT';
---                                                           QUERY PLAN
------------------------------------------------------------------------------------------------------------------------------------
--- Bitmap Heap Scan on kmer_data_t  (cost=1551.76..2813.74 rows=49998 width=20) (actual time=0.046..0.138 rows=102 loops=1)
---   Recheck Cond: (kmer_sequence = 'ATCGT'::kmer)
---   Heap Blocks: exact=96
---   ->  Bitmap Index Scan on spgist_kmer_idx  (cost=0.00..1539.27 rows=49998 width=0) (actual time=0.031..0.031 rows=102 loops=1)
---         Index Cond: (kmer_sequence = 'ATCGT'::kmer)
--- Planning Time: 0.111 ms
--- Execution Time: 0.185 ms
+SELECT * FROM kmer_data_t WHERE kmer_sequence = 'ATCGC';
+--                                                            QUERY PLAN
+--------------------------------------------------------------------------------------------------------------------------------------
+-- Bitmap Heap Scan on kmer_data_t  (cost=18487.27..31107.24 rows=499998 width=20) (actual time=0.516..1.257 rows=1021 loops=1)
+--   Recheck Cond: (kmer_sequence = 'ATCGC'::kmer)
+--   Heap Blocks: exact=941
+--   ->  Bitmap Index Scan on spgist_kmer_idx  (cost=0.00..18362.27 rows=499998 width=0) (actual time=0.392..0.392 rows=1021 loops=1)
+--         Index Cond: (kmer_sequence = 'ATCGC'::kmer)
+-- Planning Time: 0.198 ms
+-- Execution Time: 1.337 ms
 --(7 rows)
-
 
 -- Enable sequential scan and check starts_with operator
 SET enable_seqscan = ON;
 EXPLAIN ANALYZE
 SELECT * FROM kmer_data_t WHERE kmer_sequence ^@ 'ACTG';
---                                                  QUERY PLAN
------------------------------------------------------------------------------------------------------------------
--- Seq Scan on kmer_data_t  (cost=0.00..1886.95 rows=49998 width=20) (actual time=0.013..4.620 rows=399 loops=1)
+--                                                    QUERY PLAN
+---------------------------------------------------------------------------------------------------------------------
+-- Seq Scan on kmer_data_t  (cost=0.00..18869.95 rows=499998 width=20) (actual time=0.015..37.606 rows=4044 loops=1)
 --   Filter: (kmer_sequence ^@ 'ACTG'::kmer)
---   Rows Removed by Filter: 99597
--- Planning Time: 0.032 ms
--- Execution Time: 4.648 ms
+--   Rows Removed by Filter: 995952
+-- Planning Time: 0.038 ms
+-- Execution Time: 37.701 ms
 --(5 rows)
 
 
@@ -235,39 +234,41 @@ SELECT * FROM kmer_data_t WHERE kmer_sequence ^@ 'ACTG';
 SET enable_seqscan = OFF;
 EXPLAIN ANALYZE
 SELECT * FROM kmer_data_t WHERE kmer_sequence ^@ 'ACTG';
---                                                           QUERY PLAN
------------------------------------------------------------------------------------------------------------------------------------
--- Bitmap Heap Scan on kmer_data_t  (cost=1551.76..2813.74 rows=49998 width=20) (actual time=0.094..0.298 rows=388 loops=1)
+--                                                             QUERY PLAN
+--------------------------------------------------------------------------------------------------------------------------------------
+-- Bitmap Heap Scan on kmer_data_t  (cost=18487.27..31107.24 rows=499998 width=20) (actual time=1.122..4.230 rows=4036 loops=1)
 --   Recheck Cond: (kmer_sequence ^@ 'ACTG'::kmer)
---   Heap Blocks: exact=282
---   ->  Bitmap Index Scan on spgist_kmer_idx  (cost=0.00..1539.27 rows=49998 width=0) (actual time=0.069..0.069 rows=388 loops=1)
+--   Heap Blocks: exact=3014
+--   ->  Bitmap Index Scan on spgist_kmer_idx  (cost=0.00..18362.27 rows=499998 width=0) (actual time=0.820..0.820 rows=4036 loops=1)
 --         Index Cond: (kmer_sequence ^@ 'ACTG'::kmer)
--- Planning Time: 0.037 ms
--- Execution Time: 0.316 ms
+-- Planning Time: 0.044 ms
+-- Execution Time: 4.329 ms
 --(7 rows)
+
 
 -- Check qkmer query
 SET enable_seqscan = OFF;
 EXPLAIN ANALYZE
 SELECT * FROM kmer_data_t WHERE 'MRKYN' @> kmer_sequence;
---                                                            QUERY PLAN
--------------------------------------------------------------------------------------------------------------------------------------
--- Seq Scan on kmer_data_t  (cost=10000000000.00..10000001886.95 rows=49998 width=20) (actual time=50.231..54.008 rows=6315 loops=1)
+--                                                             QUERY PLAN
+---------------------------------------------------------------------------------------------------------------------------------------
+-- Seq Scan on kmer_data_t  (cost=10000000000.00..10000018869.95 rows=499998 width=20) (actual time=52.258..89.730 rows=62854 loops=1)
 --   Filter: ('MRKYN'::qkmer @> kmer_sequence)
---   Rows Removed by Filter: 93681
--- Planning Time: 0.012 ms
+--   Rows Removed by Filter: 937142
+-- Planning Time: 0.033 ms
 -- JIT:
 --   Functions: 2
 --   Options: Inlining true, Optimization true, Expressions true, Deforming true
---   Timing: Generation 0.091 ms, Inlining 36.008 ms, Optimization 9.219 ms, Emission 4.989 ms, Total 50.306 ms
--- Execution Time: 64.507 ms
+--   Timing: Generation 0.106 ms, Inlining 37.289 ms, Optimization 9.490 ms, Emission 5.461 ms, Total 52.347 ms
+-- Execution Time: 101.739 ms
 --(9 rows)
 
 
 -- Check the index usage
 SELECT * FROM pg_stat_user_indexes WHERE indexrelname = 'spgist_kmer_idx';
--- relid  | indexrelid | schemaname |   relname   |  indexrelname   | idx_scan |        last_idx_scan         | idx_tup_read | idx_tup_fetch
-----------+------------+------------+-------------+-----------------+----------+------------------------------+--------------+---------------
--- 610030 |     610036 | public     | kmer_data_t | spgist_kmer_idx |        2 | 2024-12-03 12:12:56.42183+01 |          490 |             0
+-- relid  | indexrelid | schemaname |   relname   |  indexrelname   | idx_scan |         last_idx_scan         | idx_tup_read | idx_tup_fetch
+----------+------------+------------+-------------+-----------------+----------+-------------------------------+--------------+---------------
+-- 614844 |     614850 | public     | kmer_data_t | spgist_kmer_idx |        2 | 2024-12-06 19:42:22.879734+01 |         5057 |             0
 --(1 row)
+
 
