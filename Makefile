@@ -7,6 +7,6 @@ PG_CONFIG   ?= pg_config
 PGXS        := $(shell $(PG_CONFIG) --pgxs)
 INCLUDE_DIR := $(shell $(PG_CONFIG) --includedir-server)
 
-CFLAGS += -I$(INCLUDE_DIR) -Wall -Werror -g
+CFLAGS += -I$(INCLUDE_DIR) -Wall -Werror -g -O3
 
 include $(PGXS)

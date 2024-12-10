@@ -195,8 +195,6 @@ SELECT * FROM kmer_data_t WHERE kmer_sequence = 'ATCGC';
 -- Execution Time: 41.790 ms
 --(5 rows)
 
-
-
 -- Create the SP-GiST index
 CREATE INDEX spgist_kmer_idx
 ON kmer_data_t USING spgist (kmer_sequence spgist_kmer_ops);
